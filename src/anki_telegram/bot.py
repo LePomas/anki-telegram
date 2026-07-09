@@ -8,10 +8,12 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -112,6 +114,26 @@ class Telegram:
             self.call("sendChatAction", chat_id=chat_id, action="typing")
         except Exception:
             pass
+
+
+@contextmanager
+def keep_typing(tg: "Telegram", chat_id: int, interval: float = 4.0):
+    """Re-send the 'typing…' action every few seconds for the duration of a
+    slow call — Telegram's indicator fades ~5s after a single ping."""
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            tg.typing(chat_id)
+            stop.wait(interval)
+
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join(timeout=1)
 
 
 def btn(text: str, data: str) -> dict:
@@ -220,24 +242,24 @@ class Bot:
     # -- flow: incoming word --------------------------------------------------
 
     def on_new_word(self, text: str) -> None:
-        self.tg.typing(self.cfg.chat_id)
-        try:
-            self.store.sync(allow_full_download=True)
-        except Exception as exc:
-            log.exception("sync failed")
-            self.tg.send(self.cfg.chat_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
-            return
-        try:
-            analysis = ai.analyze_word(
-                self.cfg.claude_model,
-                text,
-                claude_bin=self.cfg.claude_bin,
-                cwd=self.cfg.data_dir,
-            )
-        except Exception as exc:
-            log.exception("analyze failed")
-            self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(str(exc))}")
-            return
+        with keep_typing(self.tg, self.cfg.chat_id):
+            try:
+                self.store.sync(allow_full_download=True)
+            except Exception as exc:
+                log.exception("sync failed")
+                self.tg.send(self.cfg.chat_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
+                return
+            try:
+                analysis = ai.analyze_word(
+                    self.cfg.claude_model,
+                    text,
+                    claude_bin=self.cfg.claude_bin,
+                    cwd=self.cfg.data_dir,
+                )
+            except Exception as exc:
+                log.exception("analyze failed")
+                self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(str(exc))}")
+                return
 
         matches = self.store.search(analysis["search_terms"])
         main_hits = [m for m in matches if m.in_main_field]
@@ -332,7 +354,6 @@ class Bot:
     # -- flow: draft + preview -------------------------------------------------
 
     def draft_and_preview(self, deck: str) -> None:
-        self.tg.typing(self.cfg.chat_id)
         fmt = self.store.deck_format(deck)
         if fmt is None:
             self.tg.send(
@@ -341,15 +362,16 @@ class Bot:
             )
             return
         try:
-            draft = ai.draft_fields(
-                self.cfg.claude_model,
-                self.session.analysis.get("display", ""),
-                fmt.field_names,
-                fmt.examples,
-                deck,
-                claude_bin=self.cfg.claude_bin,
-                cwd=self.cfg.data_dir,
-            )
+            with keep_typing(self.tg, self.cfg.chat_id):
+                draft = ai.draft_fields(
+                    self.cfg.claude_model,
+                    self.session.analysis.get("display", ""),
+                    fmt.field_names,
+                    fmt.examples,
+                    deck,
+                    claude_bin=self.cfg.claude_bin,
+                    cwd=self.cfg.data_dir,
+                )
         except Exception as exc:
             log.exception("draft failed")
             self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(str(exc))}")
@@ -428,30 +450,30 @@ class Bot:
         if fmt is None or not s.draft:
             self.tg.edit(self.cfg.chat_id, message_id, "Nothing to save — send the word again.")
             return
-        self.tg.typing(self.cfg.chat_id)
         fields = {n: s.draft.get(n, "") for n in fmt.field_names}
         main = main_field(fmt.field_names)
         audio_fields = [n for n in fmt.field_names if is_audio_field(n)]
-        if main and fields.get(main):
+        with keep_typing(self.tg, self.cfg.chat_id):
+            if main and fields.get(main):
+                try:
+                    # ponytail: TTS covers the main field only; extend to sentence audio if wanted
+                    sound = self.store.add_audio(fields[main])
+                    if audio_fields:
+                        fields[audio_fields[0]] = sound
+                    else:
+                        # notetype has no dedicated audio field (e.g. KontextB1Plus Basic) —
+                        # inline the sound tag into the main field, matching that deck's
+                        # existing convention of "text [sound:...]" in one field.
+                        fields[main] = f"{fields[main]} {sound}"
+                except Exception as exc:
+                    log.warning("TTS failed, saving without audio: %s", exc)
             try:
-                # ponytail: TTS covers the main field only; extend to sentence audio if wanted
-                sound = self.store.add_audio(fields[main])
-                if audio_fields:
-                    fields[audio_fields[0]] = sound
-                else:
-                    # notetype has no dedicated audio field (e.g. KontextB1Plus Basic) —
-                    # inline the sound tag into the main field, matching that deck's
-                    # existing convention of "text [sound:...]" in one field.
-                    fields[main] = f"{fields[main]} {sound}"
+                self.store.add_note(fmt.deck, fmt.notetype, fields)
+                self.store.sync(allow_full_download=False)
             except Exception as exc:
-                log.warning("TTS failed, saving without audio: %s", exc)
-        try:
-            self.store.add_note(fmt.deck, fmt.notetype, fields)
-            self.store.sync(allow_full_download=False)
-        except Exception as exc:
-            log.exception("card creation failed")
-            self.tg.edit(self.cfg.chat_id, message_id, f"⚠️ Failed: {esc(str(exc))}")
-            return
+                log.exception("card creation failed")
+                self.tg.edit(self.cfg.chat_id, message_id, f"⚠️ Failed: {esc(str(exc))}")
+                return
         word = fields.get(main, "") if main else ""
         self.session = Session()
         self.tg.edit(
