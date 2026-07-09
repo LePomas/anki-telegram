@@ -397,11 +397,11 @@ class Bot:
         names = self.editable_fields()
         lines = ["Send one line per field, in this order:", ""]
         for n in names:
-            value = (prefill or {}).get(n, "")
-            lines.append(f"<i>{esc(n)}</i>" + (f": {esc(value)}" if value else ""))
+            lines.append(f"<i>{esc(n)}</i>")
         if prefill:
-            lines.append("")
-            lines.append("(copy the values above, edit, send back — values only, one per line)")
+            values = "\n".join(esc((prefill or {}).get(n, "")) for n in names)
+            lines.append(f"<pre>{values}</pre>")
+            lines.append("(tap to copy, edit, send back — values only, one per line)")
         self.session.phase = "awaiting_fields"
         self.tg.send(self.cfg.chat_id, "\n".join(lines))
 
