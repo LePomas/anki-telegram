@@ -255,6 +255,7 @@ class Session:
     analysis: dict = field(default_factory=dict)
     deck_format: DeckFormat | None = None
     draft: dict = field(default_factory=dict)
+    draft_model: str = ""  # "provider/model" that produced `draft`, "" if hand-typed
     decks: list[str] = field(default_factory=list)
     deck_pick_reason: str = ""  # "create" (continue to draft) or "set" (just save)
 
@@ -513,12 +514,16 @@ class Bot:
             return
         session.deck_format = fmt
         session.draft = draft
+        session.draft_model = f"{self.cfg.ai.provider}/{self.cfg.ai.model}"
         self.send_preview(session)
 
     def send_preview(self, session: Session) -> None:
         fmt = session.deck_format
         assert fmt is not None
-        lines = [f"Preview — <b>{esc(fmt.deck)}</b> ({esc(fmt.notetype)}):", ""]
+        lines = [f"Preview — <b>{esc(fmt.deck)}</b> ({esc(fmt.notetype)}):"]
+        if session.draft_model:
+            lines.append(f"<i>drafted by {esc(session.draft_model)}</i>")
+        lines.append("")
         for name in fmt.field_names:
             if is_audio_field(name):
                 lines.append(f"<i>{esc(name)}</i>: 🔊 generated on save")
@@ -574,6 +579,7 @@ class Bot:
         for n in names:
             draft.setdefault(n, "")
         session.draft = draft
+        session.draft_model = ""  # hand-typed, not model output
         self.send_preview(session)
 
     # -- flow: save ---------------------------------------------------------------
