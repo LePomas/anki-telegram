@@ -1,0 +1,20 @@
+[project]
+name = "anki-telegram"
+version = "0.1.0"
+description = "Telegram bot that turns German vocab messages into deduplicated Anki cards, synced with AnkiWeb"
+readme = "README.md"
+authors = [
+    { name = "Omar Macario", email = "omar.macario@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "anki>=26.5",
+    "gtts>=2.5.4",
+]
+
+[project.scripts]
+anki-telegram = "anki_telegram.bot:main"
+
+[build-system]
+requires = ["uv_build>=0.11.27,<0.12.0"]
+build-backend = "uv_build"

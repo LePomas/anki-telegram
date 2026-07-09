@@ -1,0 +1,14 @@
+[Unit]
+Description=Anki vocab Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/anki-telegram
+ExecStart=%h/.local/bin/uv run anki-telegram
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
