@@ -432,10 +432,17 @@ class Bot:
         fields = {n: s.draft.get(n, "") for n in fmt.field_names}
         main = main_field(fmt.field_names)
         audio_fields = [n for n in fmt.field_names if is_audio_field(n)]
-        if audio_fields and main and fields.get(main):
+        if main and fields.get(main):
             try:
                 # ponytail: TTS covers the main field only; extend to sentence audio if wanted
-                fields[audio_fields[0]] = self.store.add_audio(fields[main])
+                sound = self.store.add_audio(fields[main])
+                if audio_fields:
+                    fields[audio_fields[0]] = sound
+                else:
+                    # notetype has no dedicated audio field (e.g. KontextB1Plus Basic) —
+                    # inline the sound tag into the main field, matching that deck's
+                    # existing convention of "text [sound:...]" in one field.
+                    fields[main] = f"{fields[main]} {sound}"
             except Exception as exc:
                 log.warning("TTS failed, saving without audio: %s", exc)
         try:
