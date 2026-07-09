@@ -8,6 +8,7 @@ from anki_telegram.anki_store import (
     main_field,
     strip_html,
 )
+from anki_telegram.bot import parse_callback_data
 
 
 def test_main_field():
@@ -40,6 +41,17 @@ def test_strip_html():
 def test_extract_json():
     assert ai.extract_json('noise {"a": 1} noise') == {"a": 1}
     assert ai.extract_json('```json\n{"a": {"b": 2}}\n```') == {"a": {"b": 2}}
+
+
+def test_parse_callback_data():
+    assert parse_callback_data("opt:skip:3") == ("skip", 3, None)
+    assert parse_callback_data("opt:create:42") == ("create", 42, None)
+    assert parse_callback_data("deck:7:2") == ("deck_pick", 7, 2)
+    try:
+        parse_callback_data("bogus")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
 
 
 if __name__ == "__main__":

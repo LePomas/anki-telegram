@@ -69,10 +69,15 @@ First run performs a full download of your collection from AnkiWeb into
 `DATA_DIR`. The bot syncs before every lookup and after every card it
 creates, so it stays consistent with your other devices.
 
+You can send several words before answering any of them — each gets its own
+thread. When asked to write fields yourself, reply directly to that prompt
+(tap it, then Reply) so the bot knows which word it's for.
+
 ## Commands
 
 - `/deck` — pick the target deck for new cards (remembered across restarts)
-- `/cancel` — abandon the current word
+- `/cancel` — reply to a word's message to abandon just that one, or send
+  bare to abandon everything in flight
 - `/help` — usage
 
 ## Deploy as a service

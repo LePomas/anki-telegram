@@ -92,10 +92,21 @@ class Telegram:
             raise RuntimeError(f"telegram {method} failed: {data}")
         return data["result"]
 
-    def send(self, chat_id: int, text: str, keyboard: list | None = None) -> dict:
+    def send(
+        self,
+        chat_id: int,
+        text: str,
+        keyboard: list | None = None,
+        force_reply: bool = False,
+    ) -> dict:
         params: dict = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
         if keyboard:
             params["reply_markup"] = {"inline_keyboard": keyboard}
+        elif force_reply:
+            # ties the user's plain-text answer back to this message via
+            # reply_to_message, so concurrent words can each collect their
+            # own manual fields without stepping on each other.
+            params["reply_markup"] = {"force_reply": True, "selective": True}
         return self.call("sendMessage", **params)
 
     def edit(self, chat_id: int, message_id: int, text: str, keyboard: list | None = None) -> None:
@@ -144,6 +155,25 @@ def btn(text: str, data: str) -> dict:
     return {"text": text, "callback_data": data}
 
 
+def opt_btn(text: str, action: str, sid: int) -> dict:
+    return btn(text, f"opt:{action}:{sid}")
+
+
+def deck_btn(text: str, sid: int, index: int) -> dict:
+    return btn(text, f"deck:{sid}:{index}")
+
+
+def parse_callback_data(data: str) -> tuple[str, int, int | None]:
+    """(action, sid, index) — index is only set for a deck pick."""
+    if data.startswith("opt:"):
+        _, action, sid_str = data.split(":", 2)
+        return action, int(sid_str), None
+    if data.startswith("deck:"):
+        _, sid_str, idx_str = data.split(":", 2)
+        return "deck_pick", int(sid_str), int(idx_str)
+    raise ValueError(f"unrecognized callback data: {data}")
+
+
 def esc(text: str) -> str:
     return html.escape(text, quote=False)
 
@@ -177,17 +207,23 @@ HELP = (
     "I check your Anki collection for it (including other forms and example "
     "sentences), then offer options: create a card in your target deck, write "
     "one yourself, or skip.\n\n"
+    "You can send several words before answering any of them — each gets its "
+    "own thread. When asked to write fields yourself, reply directly to that "
+    "prompt (tap it, then Reply) so I know which word it's for.\n\n"
     "Commands:\n"
     "/deck — choose the target deck\n"
-    "/cancel — abandon the current word\n"
+    "/cancel — reply to a word's message to abandon just that one, or send "
+    "bare to abandon everything in flight\n"
     "/help — this message"
 )
 
 
 @dataclass
 class Session:
-    """In-memory conversation state. Lost on restart — user just resends the word."""
+    """One word's conversation state, keyed by sid in Bot.sessions.
+    Lost on restart — user just resends the word."""
 
+    sid: int
     phase: str = "idle"  # idle | awaiting_choice | awaiting_deck | awaiting_confirm | awaiting_fields
     analysis: dict = field(default_factory=dict)
     deck_format: DeckFormat | None = None
@@ -209,7 +245,25 @@ class Bot:
         ):
             self.state.data["deck"] = cfg.write_deck
             self.state.save()
-        self.session = Session()
+        self.sessions: dict[int, Session] = {}
+        # telegram message_id -> sid, for every message that expects a reply
+        # (buttons or free text) — lets /cancel and manual-field replies find
+        # their session regardless of how many other words are in flight.
+        self._next_sid = 1
+        self.message_sid: dict[int, int] = {}
+
+    def _new_session(self, **kwargs) -> Session:
+        sid = self._next_sid
+        self._next_sid += 1
+        session = Session(sid=sid, **kwargs)
+        self.sessions[sid] = session
+        return session
+
+    def _send_tracked(
+        self, session: Session, text: str, keyboard: list | None = None, force_reply: bool = False
+    ) -> None:
+        msg = self.tg.send(self.cfg.chat_id, text, keyboard, force_reply=force_reply)
+        self.message_sid[msg["message_id"]] = session.sid
 
     # -- update dispatch ----------------------------------------------------
 
@@ -221,7 +275,8 @@ class Bot:
                 return
             text = (msg.get("text") or "").strip()
             if text:
-                self.on_text(text)
+                reply_to = msg.get("reply_to_message", {}).get("message_id")
+                self.on_text(text, reply_to)
         elif "callback_query" in update:
             cq = update["callback_query"]
             try:
@@ -233,22 +288,57 @@ class Bot:
             msg = cq.get("message", {})
             self.on_callback(cq.get("data", ""), msg.get("message_id", 0))
 
-    def on_text(self, text: str) -> None:
+    def on_text(self, text: str, reply_to: int | None = None) -> None:
         cmd = text.split("@")[0].lower() if text.startswith("/") else ""
         if cmd in ("/start", "/help"):
             self.tg.send(self.cfg.chat_id, HELP)
             return
         if cmd == "/cancel":
-            self.session = Session()
-            self.tg.send(self.cfg.chat_id, "Cancelled.")
+            self.on_cancel(reply_to)
             return
         if cmd == "/deck":
-            self.prompt_deck(reason="set")
+            session = self._new_session(phase="awaiting_deck")
+            self.prompt_deck(session, reason="set")
             return
-        if self.session.phase == "awaiting_fields":
-            self.on_manual_fields(text)
-            return
+
+        sid = self.message_sid.get(reply_to) if reply_to is not None else None
+        if sid is not None:
+            session = self.sessions.get(sid)
+            if session is None:
+                self.tg.send(self.cfg.chat_id, "That word's session is gone — send it again.")
+                return
+            if session.phase == "awaiting_fields":
+                self.on_manual_fields(session, text)
+                return
+            # reply landed on a non-text-collecting prompt — fall through and
+            # treat the message as a new word.
+        else:
+            waiting = [s for s in self.sessions.values() if s.phase == "awaiting_fields"]
+            if len(waiting) == 1:
+                self.on_manual_fields(waiting[0], text)
+                return
+            if len(waiting) > 1:
+                self.tg.send(
+                    self.cfg.chat_id,
+                    "Multiple words are waiting for manual fields — reply directly "
+                    "to the one you mean.",
+                )
+                return
         self.on_new_word(text)
+
+    def on_cancel(self, reply_to: int | None) -> None:
+        sid = self.message_sid.get(reply_to) if reply_to is not None else None
+        if sid is not None:
+            if self.sessions.pop(sid, None) is not None:
+                self.tg.send(self.cfg.chat_id, "Cancelled that word.")
+            else:
+                self.tg.send(self.cfg.chat_id, "Already finished — nothing to cancel.")
+            return
+        n = len(self.sessions)
+        self.sessions.clear()
+        self.tg.send(
+            self.cfg.chat_id, f"Cancelled {n} word(s) in flight." if n else "Nothing in flight."
+        )
 
     # -- flow: incoming word --------------------------------------------------
 
@@ -294,77 +384,90 @@ class Bot:
             lines.append("")
             lines.append("Not in your collection.")
 
+        session = self._new_session(phase="awaiting_choice", analysis=analysis)
+
         create_label = "Create card" if main_hits else "⭐ Create card"
         keyboard = []
         if main_hits:
-            keyboard.append([btn("⭐ Skip — already exists", "opt:skip")])
-        keyboard.append([btn(create_label, "opt:create")])
-        keyboard.append([btn("Write it myself", "opt:manual")])
-        keyboard.append([btn("Cancel", "opt:cancel")])
+            keyboard.append([opt_btn("⭐ Skip — already exists", "skip", session.sid)])
+        keyboard.append([opt_btn(create_label, "create", session.sid)])
+        keyboard.append([opt_btn("Write it myself", "manual", session.sid)])
+        keyboard.append([opt_btn("Cancel", "cancel", session.sid)])
 
-        self.session = Session(phase="awaiting_choice", analysis=analysis)
-        self.tg.send(self.cfg.chat_id, "\n".join(lines), keyboard)
+        self._send_tracked(session, "\n".join(lines), keyboard)
 
     # -- flow: option picked ---------------------------------------------------
 
     def on_callback(self, data: str, message_id: int) -> None:
-        s = self.session
-        if data == "opt:skip":
-            self.session = Session()
+        try:
+            action, sid, index = parse_callback_data(data)
+        except ValueError:
+            log.warning("unrecognized callback data: %s", data)
+            return
+        session = self.sessions.get(sid)
+        if session is None:
+            self.tg.edit(
+                self.cfg.chat_id, message_id, "This word's session is gone — send it again."
+            )
+            return
+        if action == "deck_pick":
+            assert index is not None
+            self.on_deck_picked(session, index)
+        elif action == "skip":
+            self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "👍 Skipped — card already exists.")
-        elif data == "opt:cancel":
-            self.session = Session()
+        elif action == "cancel":
+            self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "Cancelled.")
-        elif data == "opt:create":
+        elif action == "create":
             deck = self.state.data.get("deck")
             if deck and deck in self.store.deck_names():
-                self.draft_and_preview(deck)
+                self.draft_and_preview(session, deck)
             else:
-                self.prompt_deck(reason="create")
-        elif data == "opt:manual":
-            self.prompt_manual()
-        elif data == "opt:edit":
-            self.prompt_manual(prefill=s.draft)
-        elif data == "opt:confirm":
-            self.create_card(message_id)
-        elif data.startswith("deck:"):
-            self.on_deck_picked(int(data.split(":", 1)[1]))
+                self.prompt_deck(session, reason="create")
+        elif action == "manual":
+            self.prompt_manual(session)
+        elif action == "edit":
+            self.prompt_manual(session, prefill=session.draft)
+        elif action == "confirm":
+            self.create_card(session, message_id)
         else:
-            log.warning("unknown callback data: %s", data)
+            log.warning("unrecognized opt action: %s", action)
 
-    def prompt_deck(self, reason: str) -> None:
+    def prompt_deck(self, session: Session, reason: str) -> None:
         decks = self.store.deck_names()
         if not decks:
+            self.sessions.pop(session.sid, None)
             self.tg.send(self.cfg.chat_id, "No decks in your collection.")
             return
-        self.session.decks = decks
-        self.session.deck_pick_reason = reason
-        if self.session.phase == "idle":
-            self.session.phase = "awaiting_deck"
+        session.decks = decks
+        session.deck_pick_reason = reason
+        if session.phase == "idle":
+            session.phase = "awaiting_deck"
         current = self.state.data.get("deck")
         keyboard = [
-            [btn(("✅ " if d == current else "") + d, f"deck:{i}")]
+            [deck_btn(("✅ " if d == current else "") + d, session.sid, i)]
             for i, d in enumerate(decks)
         ]
-        self.tg.send(self.cfg.chat_id, "Pick the target deck:", keyboard)
+        self._send_tracked(session, "Pick the target deck:", keyboard)
 
-    def on_deck_picked(self, index: int) -> None:
-        decks = self.session.decks or self.store.deck_names()
+    def on_deck_picked(self, session: Session, index: int) -> None:
+        decks = session.decks or self.store.deck_names()
         if not 0 <= index < len(decks):
             self.tg.send(self.cfg.chat_id, "Stale deck list — try again.")
             return
         deck = decks[index]
         self.state.data["deck"] = deck
         self.state.save()
-        if self.session.deck_pick_reason == "create" and self.session.analysis:
-            self.draft_and_preview(deck)
+        if session.deck_pick_reason == "create" and session.analysis:
+            self.draft_and_preview(session, deck)
         else:
-            self.session = Session()
+            self.sessions.pop(session.sid, None)
             self.tg.send(self.cfg.chat_id, f"Target deck: <b>{esc(deck)}</b>")
 
     # -- flow: draft + preview -------------------------------------------------
 
-    def draft_and_preview(self, deck: str) -> None:
+    def draft_and_preview(self, session: Session, deck: str) -> None:
         fmt = self.store.deck_format(deck)
         if fmt is None:
             self.tg.send(
@@ -376,7 +479,7 @@ class Bot:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.draft_fields(
                     self.cfg.claude_model,
-                    self.session.analysis.get("display", ""),
+                    session.analysis.get("display", ""),
                     fmt.field_names,
                     fmt.examples,
                     deck,
@@ -387,59 +490,58 @@ class Bot:
             log.exception("draft failed")
             self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(str(exc))}")
             return
-        self.session.deck_format = fmt
-        self.session.draft = draft
-        self.send_preview()
+        session.deck_format = fmt
+        session.draft = draft
+        self.send_preview(session)
 
-    def send_preview(self) -> None:
-        s = self.session
-        fmt = s.deck_format
+    def send_preview(self, session: Session) -> None:
+        fmt = session.deck_format
         assert fmt is not None
         lines = [f"Preview — <b>{esc(fmt.deck)}</b> ({esc(fmt.notetype)}):", ""]
         for name in fmt.field_names:
             if is_audio_field(name):
                 lines.append(f"<i>{esc(name)}</i>: 🔊 generated on save")
-            elif is_id_field(name) or not s.draft.get(name):
+            elif is_id_field(name) or not session.draft.get(name):
                 continue
             else:
-                lines.append(f"<i>{esc(name)}</i>: {esc(s.draft[name])}")
+                lines.append(f"<i>{esc(name)}</i>: {esc(session.draft[name])}")
         keyboard = [
-            [btn("⭐ Save card", "opt:confirm")],
-            [btn("Edit fields", "opt:edit"), btn("Cancel", "opt:cancel")],
+            [opt_btn("⭐ Save card", "confirm", session.sid)],
+            [opt_btn("Edit fields", "edit", session.sid), opt_btn("Cancel", "cancel", session.sid)],
         ]
-        s.phase = "awaiting_confirm"
-        self.tg.send(self.cfg.chat_id, "\n".join(lines), keyboard)
+        session.phase = "awaiting_confirm"
+        self._send_tracked(session, "\n".join(lines), keyboard)
 
     # -- flow: manual fields -----------------------------------------------------
 
-    def editable_fields(self) -> list[str]:
-        fmt = self.session.deck_format
+    def editable_fields(self, session: Session) -> list[str]:
+        fmt = session.deck_format
         assert fmt is not None
         return [
             n for n in fmt.field_names if not is_audio_field(n) and not is_id_field(n)
         ]
 
-    def prompt_manual(self, prefill: dict | None = None) -> None:
-        if self.session.deck_format is None:
+    def prompt_manual(self, session: Session, prefill: dict | None = None) -> None:
+        if session.deck_format is None:
             deck = self.state.data.get("deck")
             fmt = self.store.deck_format(deck) if deck else None
             if fmt is None:
-                self.prompt_deck(reason="create")
+                self.prompt_deck(session, reason="create")
                 return
-            self.session.deck_format = fmt
-        names = self.editable_fields()
-        lines = ["Send one line per field, in this order:", ""]
+            session.deck_format = fmt
+        names = self.editable_fields(session)
+        lines = ["Reply to this message, one line per field, in this order:", ""]
         for n in names:
             lines.append(f"<i>{esc(n)}</i>")
         if prefill:
             values = "\n".join(esc((prefill or {}).get(n, "")) for n in names)
             lines.append(f"<pre>{values}</pre>")
-            lines.append("(tap to copy, edit, send back — values only, one per line)")
-        self.session.phase = "awaiting_fields"
-        self.tg.send(self.cfg.chat_id, "\n".join(lines))
+            lines.append("(tap to copy, edit, reply with values only, one per line)")
+        session.phase = "awaiting_fields"
+        self._send_tracked(session, "\n".join(lines), force_reply=True)
 
-    def on_manual_fields(self, text: str) -> None:
-        names = self.editable_fields()
+    def on_manual_fields(self, session: Session, text: str) -> None:
+        names = self.editable_fields(session)
         values = [line.strip() for line in text.split("\n")]
         if len(values) > len(names):
             self.tg.send(
@@ -450,18 +552,17 @@ class Bot:
         draft = dict(zip(names, values))
         for n in names:
             draft.setdefault(n, "")
-        self.session.draft = draft
-        self.send_preview()
+        session.draft = draft
+        self.send_preview(session)
 
     # -- flow: save ---------------------------------------------------------------
 
-    def create_card(self, message_id: int) -> None:
-        s = self.session
-        fmt = s.deck_format
-        if fmt is None or not s.draft:
+    def create_card(self, session: Session, message_id: int) -> None:
+        fmt = session.deck_format
+        if fmt is None or not session.draft:
             self.tg.edit(self.cfg.chat_id, message_id, "Nothing to save — send the word again.")
             return
-        fields = {n: s.draft.get(n, "") for n in fmt.field_names}
+        fields = {n: session.draft.get(n, "") for n in fmt.field_names}
         main = main_field(fmt.field_names)
         audio_fields = [n for n in fmt.field_names if is_audio_field(n)]
         with keep_typing(self.tg, self.cfg.chat_id):
@@ -486,7 +587,7 @@ class Bot:
                 self.tg.edit(self.cfg.chat_id, message_id, f"⚠️ Failed: {esc(str(exc))}")
                 return
         word = fields.get(main, "") if main else ""
-        self.session = Session()
+        self.sessions.pop(session.sid, None)
         self.tg.edit(
             self.cfg.chat_id,
             message_id,
