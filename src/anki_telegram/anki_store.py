@@ -156,10 +156,11 @@ class AnkiStore:
 
     # -- search -------------------------------------------------------------
 
-    def search(self, terms: list[str]) -> list[Match]:
+    def search(self, terms: list[str], read_deck: str | None = None) -> list[Match]:
         matches: dict[int, Match] = {}
+        deck_filter = f" deck:{escape_search(read_deck)}" if read_deck else ""
         for term in terms:
-            for nid in self.col.find_notes(escape_search(term)):
+            for nid in self.col.find_notes(escape_search(term) + deck_filter):
                 if nid in matches:
                     continue
                 note = self.col.get_note(nid)

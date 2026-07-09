@@ -55,6 +55,8 @@ class Config:
     claude_model: str
     claude_bin: str
     data_dir: Path
+    read_deck: str
+    write_deck: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,6 +68,8 @@ class Config:
             claude_model=os.environ.get("CLAUDE_MODEL", "haiku"),
             claude_bin=os.environ.get("CLAUDE_BIN", "claude"),
             data_dir=Path(os.environ.get("DATA_DIR", "data")),
+            read_deck=os.environ.get("ANKI_READ_DECK", "").strip(),
+            write_deck=os.environ.get("ANKI_WRITE_DECK", "").strip(),
         )
 
 
@@ -198,6 +202,13 @@ class Bot:
         self.tg = Telegram(cfg.telegram_token)
         self.store = AnkiStore(cfg.data_dir, cfg.ankiweb_username, cfg.ankiweb_password)
         self.state = StateStore(cfg.data_dir / "state.json")
+        if (
+            cfg.write_deck
+            and not self.state.data.get("deck")
+            and cfg.write_deck in self.store.deck_names()
+        ):
+            self.state.data["deck"] = cfg.write_deck
+            self.state.save()
         self.session = Session()
 
     # -- update dispatch ----------------------------------------------------
@@ -261,7 +272,7 @@ class Bot:
                 self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(str(exc))}")
                 return
 
-        matches = self.store.search(analysis["search_terms"])
+        matches = self.store.search(analysis["search_terms"], read_deck=self.cfg.read_deck or None)
         main_hits = [m for m in matches if m.in_main_field]
         sentence_hits = [m for m in matches if not m.in_main_field]
 
