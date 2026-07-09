@@ -7,11 +7,13 @@ offers options: create a card that mirrors your target deck's format, write
 the fields yourself, or skip. Cards get German TTS audio and are synced back
 to AnkiWeb immediately.
 
-Fully standalone: no Anki desktop, no AnkiConnect, no API key. Uses the
-official `anki` Python library headlessly, plain `urllib` for Telegram,
-`gTTS` for audio, and the [Claude Code CLI](https://claude.com/claude-code)
-in headless mode (`claude -p`) for AI — authenticated by your existing
-Claude subscription.
+Fully standalone: no Anki desktop, no AnkiConnect. Uses the official `anki`
+Python library headlessly, plain `urllib` for Telegram and for AI HTTP
+providers, and `gTTS` for audio. AI defaults to the
+[Claude Code CLI](https://claude.com/claude-code) in headless mode
+(`claude -p`), authenticated by your existing Claude subscription — no API
+key needed. Set `AI_PROVIDER` to route through a free-tier API instead:
+Gemini, OpenRouter, or a local Ollama.
 
 ## Flow
 
@@ -53,9 +55,14 @@ cp .env.example .env   # then fill in the values
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Your numeric user ID (from [@userinfobot](https://t.me/userinfobot)); all other chats are ignored |
 | `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` | AnkiWeb account for sync |
+| `AI_PROVIDER` | Optional: `claude` (default), `gemini`, `openrouter`, or `ollama` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Optional — long-lived token from `claude setup-token` if the host isn't logged in |
 | `CLAUDE_MODEL` | Optional, passed to `claude --model` (default `haiku`) |
 | `CLAUDE_BIN` | Optional path to the `claude` binary (useful under systemd) |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Required if `AI_PROVIDER=gemini` — free key at [aistudio.google.com](https://aistudio.google.com/apikey) |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | Required if `AI_PROVIDER=openrouter` — key at [openrouter.ai/keys](https://openrouter.ai/keys), many models have a free `:free` tier |
+| `OLLAMA_HOST` / `OLLAMA_MODEL` | Used if `AI_PROVIDER=ollama` — local, no key, run `ollama pull <model>` first |
+| `OLLAMA_API_KEY` | Optional, only for a remote/auth-protected Ollama or Ollama Cloud |
 | `DATA_DIR` | Optional, defaults to `./data` (local collection, media, state) |
 
 ## Run

@@ -1,5 +1,9 @@
-"""AI calls via the Claude Code CLI (`claude -p`), authenticated by your
-Claude subscription — no Anthropic API key needed."""
+"""AI calls, dispatched to whichever provider is configured.
+
+Default is the Claude Code CLI (`claude -p`), authenticated by your Claude
+subscription — no API key needed. Optionally, set AI_PROVIDER to route
+through a free-tier HTTP API instead (Gemini, OpenRouter, or a local Ollama)
+using stdlib urllib — no extra SDK dependency."""
 
 from __future__ import annotations
 
@@ -8,6 +12,9 @@ import logging
 import re
 import subprocess
 import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -15,12 +22,29 @@ log = logging.getLogger(__name__)
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def call_claude(
-    model: str,
-    system: str,
-    user: str,
-    claude_bin: str = "claude",
-    cwd: Path | None = None,
+@dataclass
+class AIConfig:
+    provider: str  # "claude" | "gemini" | "openrouter" | "ollama"
+    model: str
+    api_key: str = ""
+    claude_bin: str = "claude"
+    ollama_host: str = "http://localhost:11434"
+
+
+def call_ai(cfg: AIConfig, system: str, user: str, cwd: Path | None = None) -> str:
+    if cfg.provider == "claude":
+        return _call_claude_cli(cfg.model, system, user, cfg.claude_bin, cwd)
+    if cfg.provider == "gemini":
+        return _call_gemini(cfg.model, system, user, cfg.api_key)
+    if cfg.provider == "openrouter":
+        return _call_openrouter(cfg.model, system, user, cfg.api_key)
+    if cfg.provider == "ollama":
+        return _call_ollama(cfg.model, system, user, cfg.ollama_host, cfg.api_key)
+    raise ValueError(f"unknown AI_PROVIDER: {cfg.provider!r}")
+
+
+def _call_claude_cli(
+    model: str, system: str, user: str, claude_bin: str, cwd: Path | None
 ) -> str:
     # cwd points away from any project dir so the CLI doesn't pull in a
     # CLAUDE.md or local settings as context.
@@ -63,6 +87,85 @@ def _extract_error_message(stdout: str) -> str:
     return ""
 
 
+def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", **headers},
+    )
+    last_err = ""
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as exc:
+            last_err = f"HTTP {exc.code}: {exc.read()[:300].decode(errors='replace')}"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_err = str(exc)
+        if attempt == 1:
+            log.warning("request to %s failed, retrying: %s", url, last_err)
+            time.sleep(3)
+    raise RuntimeError(f"request to {url} failed: {last_err}")
+
+
+def _call_gemini(model: str, system: str, user: str, api_key: str) -> str:
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        f"?key={api_key}"
+    )
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": user}]}],
+    }
+    data = _post_json(url, body, {})
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(f"unexpected Gemini response: {data}") from exc
+
+
+def _call_openrouter(model: str, system: str, user: str, api_key: str) -> str:
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY is not set")
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    data = _post_json(
+        "https://openrouter.ai/api/v1/chat/completions",
+        body,
+        {"authorization": f"Bearer {api_key}"},
+    )
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError) as exc:
+        raise RuntimeError(f"unexpected OpenRouter response: {data}") from exc
+
+
+def _call_ollama(model: str, system: str, user: str, host: str, api_key: str = "") -> str:
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+    }
+    # local Ollama needs no key; a remote instance (or Ollama Cloud) behind
+    # auth does, via the same Bearer scheme as everyone else.
+    headers = {"authorization": f"Bearer {api_key}"} if api_key else {}
+    data = _post_json(f"{host.rstrip('/')}/api/chat", body, headers, timeout=120)
+    try:
+        return data["message"]["content"]
+    except KeyError as exc:
+        raise RuntimeError(f"unexpected Ollama response: {data}") from exc
+
+
 def extract_json(text: str) -> dict:
     """Parse the first JSON object out of a model response."""
     match = _JSON_RE.search(text)
@@ -83,10 +186,8 @@ Reply with ONLY a JSON object:
 }"""
 
 
-def analyze_word(
-    model: str, text: str, claude_bin: str = "claude", cwd: Path | None = None
-) -> dict:
-    raw = call_claude(model, ANALYZE_SYSTEM, text, claude_bin, cwd)
+def analyze_word(cfg: AIConfig, text: str, cwd: Path | None = None) -> dict:
+    raw = call_ai(cfg, ANALYZE_SYSTEM, text, cwd)
     result = extract_json(raw)
     terms = [t for t in result.get("search_terms", []) if t.strip()]
     if text not in terms:
@@ -104,17 +205,32 @@ Write a new note for the requested word that mirrors the examples EXACTLY:
 same language per field (if examples translate into Spanish, use Latin American
 Mexican Spanish — never peninsular Spanish), same formatting, same level of detail.
 German nouns get their article (der/die/das); verbs are given as infinitive.
+
+Keep every field monolingual: a German field holds ONLY German, a translation
+field holds ONLY the translation. Never append the other language, or mix
+languages within one field.
+
+Only add an example sentence if the word is ambiguous, has multiple common
+senses, or could otherwise be confused with something else — most words don't
+need one. When you do add one, put it in BOTH the German field (as a German
+example) and the translation field (that same example translated), each
+appended after the headword/translation.
+
+The German field is read aloud by text-to-speech verbatim, so keep it plainly
+speakable: ordinary sentence punctuation only (periods, commas) — no quotation
+marks, bullets, middots ("·"), slashes, or other decorative separators a TTS
+engine would mispronounce or read as literal symbols.
+
 Leave audio/sound fields and ID/timestamp-like fields empty ("").
 Reply with ONLY a JSON object mapping every field name to its value."""
 
 
 def draft_fields(
-    model: str,
+    cfg: AIConfig,
     word_display: str,
     field_names: list[str],
     examples: list[dict[str, str]],
     deck: str,
-    claude_bin: str = "claude",
     cwd: Path | None = None,
 ) -> dict[str, str]:
     user = (
@@ -123,6 +239,6 @@ def draft_fields(
         f"Example notes:\n{json.dumps(examples, ensure_ascii=False, indent=1)}\n\n"
         f"Create a note for: {word_display}"
     )
-    raw = call_claude(model, DRAFT_SYSTEM, user, claude_bin, cwd)
+    raw = call_ai(cfg, DRAFT_SYSTEM, user, cwd)
     drafted = extract_json(raw)
     return {name: str(drafted.get(name, "")) for name in field_names}

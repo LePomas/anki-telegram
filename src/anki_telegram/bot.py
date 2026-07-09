@@ -46,14 +46,42 @@ def require_env(name: str) -> str:
     return value
 
 
+_DEFAULT_MODELS = {
+    "claude": "haiku",
+    # gemini-2.5-pro has a 0 free-quota limit on AI Studio's free tier — flash is
+    # the strongest model actually reachable without billing enabled.
+    "gemini": "gemini-2.5-flash",
+    # nvidia's Nemotron 3 Ultra: largest free-tier model on OpenRouter, verified
+    # working and produces clean monolingual JSON output.
+    "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
+    # same model family, also free on Ollama Cloud with this account.
+    "ollama": "nemotron-3-ultra",
+}
+
+
+def _ai_config_from_env() -> ai.AIConfig:
+    provider = os.environ.get("AI_PROVIDER", "claude").strip().lower()
+    if provider not in _DEFAULT_MODELS:
+        raise SystemExit(
+            f"unknown AI_PROVIDER {provider!r} — choose one of {sorted(_DEFAULT_MODELS)}"
+        )
+    model_env = f"{provider.upper()}_MODEL"
+    return ai.AIConfig(
+        provider=provider,
+        model=os.environ.get(model_env, _DEFAULT_MODELS[provider]),
+        api_key=os.environ.get(f"{provider.upper()}_API_KEY", ""),
+        claude_bin=os.environ.get("CLAUDE_BIN", "claude"),
+        ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+    )
+
+
 @dataclass
 class Config:
     telegram_token: str
     chat_id: int
     ankiweb_username: str
     ankiweb_password: str
-    claude_model: str
-    claude_bin: str
+    ai: ai.AIConfig
     data_dir: Path
     read_deck: str
     write_deck: str
@@ -65,8 +93,7 @@ class Config:
             chat_id=int(require_env("TELEGRAM_CHAT_ID")),
             ankiweb_username=require_env("ANKIWEB_USERNAME"),
             ankiweb_password=require_env("ANKIWEB_PASSWORD"),
-            claude_model=os.environ.get("CLAUDE_MODEL", "haiku"),
-            claude_bin=os.environ.get("CLAUDE_BIN", "claude"),
+            ai=_ai_config_from_env(),
             data_dir=Path(os.environ.get("DATA_DIR", "data")),
             read_deck=os.environ.get("ANKI_READ_DECK", "").strip(),
             write_deck=os.environ.get("ANKI_WRITE_DECK", "").strip(),
@@ -351,12 +378,7 @@ class Bot:
                 self.tg.send(self.cfg.chat_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
                 return
             try:
-                analysis = ai.analyze_word(
-                    self.cfg.claude_model,
-                    text,
-                    claude_bin=self.cfg.claude_bin,
-                    cwd=self.cfg.data_dir,
-                )
+                analysis = ai.analyze_word(self.cfg.ai, text, cwd=self.cfg.data_dir)
             except Exception as exc:
                 log.exception("analyze failed")
                 self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(str(exc))}")
@@ -478,12 +500,11 @@ class Bot:
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.draft_fields(
-                    self.cfg.claude_model,
+                    self.cfg.ai,
                     session.analysis.get("display", ""),
                     fmt.field_names,
                     fmt.examples,
                     deck,
-                    claude_bin=self.cfg.claude_bin,
                     cwd=self.cfg.data_dir,
                 )
         except Exception as exc:
@@ -640,12 +661,14 @@ def main() -> None:
     )
     load_env_file(args.env_file)
     cfg = Config.from_env()
-    if shutil.which(cfg.claude_bin) is None:
+    if cfg.ai.provider == "claude" and shutil.which(cfg.ai.claude_bin) is None:
         raise SystemExit(
-            f"'{cfg.claude_bin}' not found — install Claude Code "
+            f"'{cfg.ai.claude_bin}' not found — install Claude Code "
             "(npm install -g @anthropic-ai/claude-code) and log in, "
             "or set CLAUDE_BIN to its path"
         )
+    if cfg.ai.provider in ("gemini", "openrouter") and not cfg.ai.api_key:
+        raise SystemExit(f"AI_PROVIDER={cfg.ai.provider} needs {cfg.ai.provider.upper()}_API_KEY set")
     Bot(cfg).run(once=args.once)
 
 
