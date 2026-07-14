@@ -784,11 +784,26 @@ class Bot:
         )
         self._collapse_menus(session)
 
+    def _register_commands(self) -> None:
+        try:
+            self.tg.call(
+                "setMyCommands",
+                commands=[
+                    {"command": "settings", "description": "target deck, search scope, AI provider"},
+                    {"command": "deck", "description": "choose the target deck"},
+                    {"command": "cancel", "description": "abandon a word (reply) or everything in flight"},
+                    {"command": "help", "description": "show usage"},
+                ],
+            )
+        except Exception:
+            log.exception("setMyCommands failed")
+
     # -- main loop ------------------------------------------------------------------
 
     def run(self, once: bool = False) -> None:
         log.info("initial AnkiWeb sync")
         self.store.sync(allow_full_download=True)
+        self._register_commands()
         log.info("starting; %d decks in collection", len(self.store.deck_names()))
         while True:
             offset = self.state.data.get("offset", 0)
