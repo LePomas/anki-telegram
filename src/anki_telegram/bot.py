@@ -48,9 +48,9 @@ def require_env(name: str) -> str:
 
 _DEFAULT_MODELS = {
     "claude": "haiku",
-    # gemini-2.5-pro has a 0 free-quota limit on AI Studio's free tier — flash is
-    # the strongest model actually reachable without billing enabled.
-    "gemini": "gemini-2.5-flash",
+    # pinned "gemini-2.5-flash" etc. 404 with "no longer available to new
+    # users" on newer AI Studio accounts — the rolling alias stays current.
+    "gemini": "gemini-flash-latest",
     # nvidia's Nemotron 3 Ultra: largest free-tier model on OpenRouter, verified
     # working and produces clean monolingual JSON output.
     "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
@@ -76,7 +76,7 @@ def _ai_config_from_env() -> ai.AIConfig:
         agy_bin=os.environ.get("AGY_BIN", "agy"),
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
         fallback_model=os.environ.get(
-            "GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite" if provider == "gemini" else ""
+            "GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest" if provider == "gemini" else ""
         ),
     )
 
@@ -209,6 +209,14 @@ def parse_callback_data(data: str) -> tuple[str, int, int | None]:
 
 def esc(text: str) -> str:
     return html.escape(text, quote=False)
+
+
+def _friendly_ai_error(exc: Exception) -> str:
+    """Turn a raw provider exception into something a non-dev can act on."""
+    msg = str(exc)
+    if "429" in msg or "quota" in msg.lower() or "rate limit" in msg.lower():
+        return "AI backend is rate-limited or out of quota — try again later, or switch AI_PROVIDER."
+    return "AI backend didn't respond. Check the bot's logs for details."
 
 
 # -- persisted state ----------------------------------------------------------
@@ -388,7 +396,7 @@ class Bot:
                 analysis = ai.analyze_word(self.cfg.ai, text, cwd=self.cfg.data_dir)
             except Exception as exc:
                 log.exception("analyze failed")
-                self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(str(exc))}")
+                self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(_friendly_ai_error(exc))}")
                 return
 
         matches = self.store.search(analysis["search_terms"], read_deck=self.cfg.read_deck or None)
@@ -516,7 +524,7 @@ class Bot:
                 )
         except Exception as exc:
             log.exception("draft failed")
-            self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(str(exc))}")
+            self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}")
             return
         session.deck_format = fmt
         session.draft = draft

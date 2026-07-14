@@ -15,7 +15,7 @@ from anki_telegram.anki_store import (
     main_field,
     strip_html,
 )
-from anki_telegram.bot import _ai_config_from_env, parse_callback_data
+from anki_telegram.bot import _ai_config_from_env, _friendly_ai_error, parse_callback_data
 
 
 def test_main_field():
@@ -305,12 +305,41 @@ def test_ai_config_from_env_agy_reads_bin_and_model_override():
     assert cfg.model == "custom-model"
 
 
+def test_post_json_error_never_leaks_query_string_secrets():
+    # Arrange: url carries an API key in the query string, like Gemini's
+    err = _http_429()
+    with patch("urllib.request.urlopen", side_effect=[err, err]), patch("anki_telegram.ai.time.sleep"):
+        # Act / Assert
+        try:
+            ai._post_json("https://example.com/v1/models/x:generateContent?key=SECRET123", {}, {})
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "SECRET123" not in str(exc)
+            assert "key=" not in str(exc)
+
+
+# -- bot._friendly_ai_error ----------------------------------------------------
+
+
+def test_friendly_ai_error_detects_rate_limit_and_quota():
+    # Arrange / Act / Assert
+    assert "rate-limited" in _friendly_ai_error(RuntimeError("HTTP 429: too many requests"))
+    assert "rate-limited" in _friendly_ai_error(RuntimeError("You exceeded your current quota"))
+
+
+def test_friendly_ai_error_generic_fallback():
+    # Arrange / Act
+    result = _friendly_ai_error(RuntimeError("connection refused"))
+    # Assert
+    assert result == "AI backend didn't respond. Check the bot's logs for details."
+
+
 def test_ai_config_from_env_gemini_fallback_defaults_and_overrides():
     # Arrange / Act
     default_cfg = _env_config(AI_PROVIDER="gemini")
     override_cfg = _env_config(AI_PROVIDER="gemini", GEMINI_FALLBACK_MODEL="gemini-2.0-flash")
     # Assert
-    assert default_cfg.fallback_model == "gemini-2.5-flash-lite"
+    assert default_cfg.fallback_model == "gemini-flash-lite-latest"
     assert override_cfg.fallback_model == "gemini-2.0-flash"
 
 

@@ -114,6 +114,9 @@ def _extract_error_message(stdout: str) -> str:
 
 
 def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> dict:
+    # query string may carry an API key (e.g. Gemini) — never let it reach a
+    # log line or an exception message that could end up in a Telegram chat.
+    safe_url = url.split("?")[0]
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -137,9 +140,9 @@ def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> dict:
         except (urllib.error.URLError, TimeoutError) as exc:
             last_err = str(exc)
         if attempt == 1:
-            log.warning("request to %s failed, retrying in %.1fs: %s", url, delay, last_err)
+            log.warning("request to %s failed, retrying in %.1fs: %s", safe_url, delay, last_err)
             time.sleep(delay)
-    raise RuntimeError(f"request to {url} failed: {last_err}")
+    raise RuntimeError(f"request to {safe_url} failed: {last_err}")
 
 
 def _gemini_url(model: str, api_key: str) -> str:
