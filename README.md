@@ -35,6 +35,26 @@ The whole thing — choice, deck pick if needed, preview, add/remove example —
 plays out by editing a single message in place, so a chat with several words
 in flight doesn't fill up with old button messages.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    user([You, in Telegram]) -->|word / button tap| bot["bot.py — long-poll loop, session state machine"]
+    bot -->|analyze_word, draft_fields| ai["ai.py — claude CLI / Gemini / OpenRouter / Ollama / agy"]
+    bot -->|search, deck_format, add_note| store["anki_store.py — AnkiStore"]
+    store --> col[(local Anki collection)]
+    store -->|sync| web[(AnkiWeb)]
+    store -->|gTTS| audio[/generated audio/]
+```
+
+`ai.py` shells out to the **Claude Code CLI** (`claude -p --output-format
+json`) rather than calling the Anthropic API directly — auth rides on the
+user's existing Claude subscription, so there's no API key handling for the
+default provider. `AnkiStore` wraps a headless `anki.collection.Collection`
+(no Anki desktop, no AnkiConnect): full download is allowed before every
+read but refused after a local write, so a forced full sync can never
+silently discard a card the bot just created.
+
 ## Setup
 
 Requires Python 3.13+, [uv](https://docs.astral.sh/uv/), and the
