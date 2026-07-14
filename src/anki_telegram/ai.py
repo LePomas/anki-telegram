@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -18,28 +19,33 @@ from dataclasses import dataclass
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+_gemini_lock = threading.Lock()  # ponytail: global lock, per-model locks if throughput matters
 
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 @dataclass
 class AIConfig:
-    provider: str  # "claude" | "gemini" | "openrouter" | "ollama"
+    provider: str  # "claude" | "gemini" | "openrouter" | "ollama" | "agy"
     model: str
     api_key: str = ""
     claude_bin: str = "claude"
+    agy_bin: str = "agy"
     ollama_host: str = "http://localhost:11434"
+    fallback_model: str = ""  # gemini only: used when the primary model hits a 429
 
 
 def call_ai(cfg: AIConfig, system: str, user: str, cwd: Path | None = None) -> str:
     if cfg.provider == "claude":
         return _call_claude_cli(cfg.model, system, user, cfg.claude_bin, cwd)
     if cfg.provider == "gemini":
-        return _call_gemini(cfg.model, system, user, cfg.api_key)
+        return _call_gemini(cfg.model, system, user, cfg.api_key, cfg.fallback_model)
     if cfg.provider == "openrouter":
         return _call_openrouter(cfg.model, system, user, cfg.api_key)
     if cfg.provider == "ollama":
         return _call_ollama(cfg.model, system, user, cfg.ollama_host, cfg.api_key)
+    if cfg.provider == "agy":
+        return _call_agy_cli(cfg.model, system, user, cfg.agy_bin, cwd)
     raise ValueError(f"unknown AI_PROVIDER: {cfg.provider!r}")
 
 
@@ -74,6 +80,26 @@ def _call_claude_cli(
     raise RuntimeError(f"claude CLI failed: {last_err}")
 
 
+def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | None) -> str:
+    # agy has no --system-prompt / --output-format flags (unlike claude), so fold
+    # the system prompt into the single print-mode prompt and take stdout as-is.
+    # -p/--print takes the prompt as its own value, so it must come last —
+    # anything after it is swallowed as the prompt string, not a separate flag.
+    cmd = [agy_bin, "--model", model, "-p", f"{system}\n\n{user}"]
+    last_err = ""
+    for attempt in (1, 2):
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=180, cwd=cwd
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+        last_err = (proc.stderr or proc.stdout)[-300:]
+        if attempt == 1:
+            log.warning("agy CLI exit %s, retrying: %s", proc.returncode, last_err)
+            time.sleep(3)
+    raise RuntimeError(f"agy CLI failed: {last_err}")
+
+
 def _extract_error_message(stdout: str) -> str:
     """Pull a human-readable reason out of the CLI's JSON stdout, if present."""
     try:
@@ -94,32 +120,53 @@ def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> dict:
         headers={"content-type": "application/json", **headers},
     )
     last_err = ""
+    delay = 3.0
     for attempt in (1, 2):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             last_err = f"HTTP {exc.code}: {exc.read()[:300].decode(errors='replace')}"
+            if exc.code == 429:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                if retry_after:
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        pass
         except (urllib.error.URLError, TimeoutError) as exc:
             last_err = str(exc)
         if attempt == 1:
-            log.warning("request to %s failed, retrying: %s", url, last_err)
-            time.sleep(3)
+            log.warning("request to %s failed, retrying in %.1fs: %s", url, delay, last_err)
+            time.sleep(delay)
     raise RuntimeError(f"request to {url} failed: {last_err}")
 
 
-def _call_gemini(model: str, system: str, user: str, api_key: str) -> str:
-    if not api_key:
-        raise RuntimeError("GEMINI_API_KEY is not set")
-    url = (
+def _gemini_url(model: str, api_key: str) -> str:
+    return (
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         f"?key={api_key}"
     )
+
+
+def _call_gemini(model: str, system: str, user: str, api_key: str, fallback_model: str = "") -> str:
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
     }
-    data = _post_json(url, body, {})
+    with _gemini_lock:
+        try:
+            data = _post_json(_gemini_url(model, api_key), body, {})
+        except RuntimeError as exc:
+            if fallback_model and fallback_model != model and "HTTP 429" in str(exc):
+                log.warning(
+                    "gemini model %s rate-limited, falling back to %s", model, fallback_model
+                )
+                data = _post_json(_gemini_url(fallback_model, api_key), body, {})
+            else:
+                raise
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except (KeyError, IndexError) as exc:

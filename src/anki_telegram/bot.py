@@ -56,6 +56,8 @@ _DEFAULT_MODELS = {
     "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",
     # same model family, also free on Ollama Cloud with this account.
     "ollama": "nemotron-3-ultra",
+    # Antigravity CLI, billed through the caller's Google AI Pro/Ultra plan.
+    "agy": "Gemini 3.5 Flash (Medium)",
 }
 
 
@@ -71,7 +73,11 @@ def _ai_config_from_env() -> ai.AIConfig:
         model=os.environ.get(model_env, _DEFAULT_MODELS[provider]),
         api_key=os.environ.get(f"{provider.upper()}_API_KEY", ""),
         claude_bin=os.environ.get("CLAUDE_BIN", "claude"),
+        agy_bin=os.environ.get("AGY_BIN", "agy"),
         ollama_host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+        fallback_model=os.environ.get(
+            "GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite" if provider == "gemini" else ""
+        ),
     )
 
 
@@ -672,6 +678,11 @@ def main() -> None:
             f"'{cfg.ai.claude_bin}' not found — install Claude Code "
             "(npm install -g @anthropic-ai/claude-code) and log in, "
             "or set CLAUDE_BIN to its path"
+        )
+    if cfg.ai.provider == "agy" and shutil.which(cfg.ai.agy_bin) is None:
+        raise SystemExit(
+            f"'{cfg.ai.agy_bin}' not found — install the Antigravity CLI and log in, "
+            "or set AGY_BIN to its path"
         )
     if cfg.ai.provider in ("gemini", "openrouter") and not cfg.ai.api_key:
         raise SystemExit(f"AI_PROVIDER={cfg.ai.provider} needs {cfg.ai.provider.upper()}_API_KEY set")

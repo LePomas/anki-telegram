@@ -1,4 +1,11 @@
-"""Checks for the pure logic: field heuristics, search escaping, JSON extraction."""
+"""Checks for the pure logic: field heuristics, search escaping, JSON extraction,
+and the AI provider dispatch (mocking subprocess/urlopen at the process boundary
+so no real CLI or network call ever happens)."""
+
+import io
+import os
+import urllib.error
+from unittest.mock import MagicMock, patch
 
 from anki_telegram import ai
 from anki_telegram.anki_store import (
@@ -8,7 +15,7 @@ from anki_telegram.anki_store import (
     main_field,
     strip_html,
 )
-from anki_telegram.bot import parse_callback_data
+from anki_telegram.bot import _ai_config_from_env, parse_callback_data
 
 
 def test_main_field():
@@ -43,6 +50,14 @@ def test_extract_json():
     assert ai.extract_json('```json\n{"a": {"b": 2}}\n```') == {"a": {"b": 2}}
 
 
+def test_extract_json_no_json_raises():
+    try:
+        ai.extract_json("no json here")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 def test_parse_callback_data():
     assert parse_callback_data("opt:skip:3") == ("skip", 3, None)
     assert parse_callback_data("opt:create:42") == ("create", 42, None)
@@ -52,6 +67,251 @@ def test_parse_callback_data():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# -- ai.call_ai dispatch ------------------------------------------------------
+
+
+def test_call_ai_unknown_provider_raises():
+    # Arrange
+    cfg = ai.AIConfig(provider="bogus", model="m")
+    # Act / Assert
+    try:
+        ai.call_ai(cfg, "sys", "usr")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+# -- ai._call_gemini (via call_ai) --------------------------------------------
+
+
+def _fake_response(payload: dict):
+    resp = MagicMock()
+    resp.__enter__.return_value = resp
+    resp.read.return_value = ai.json.dumps(payload).encode()
+    return resp
+
+
+def _http_429(retry_after: str | None = None):
+    hdrs = {"Retry-After": retry_after} if retry_after else {}
+    return urllib.error.HTTPError("url", 429, "Too Many Requests", hdrs, io.BytesIO(b"slow down"))
+
+
+def test_call_gemini_missing_api_key_raises():
+    # Arrange: null/empty input boundary
+    cfg = ai.AIConfig(provider="gemini", model="gemini-2.5-flash", api_key="")
+    # Act / Assert
+    try:
+        ai.call_ai(cfg, "sys", "usr")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "GEMINI_API_KEY" in str(exc)
+
+
+def test_call_gemini_success():
+    # Arrange
+    cfg = ai.AIConfig(provider="gemini", model="gemini-2.5-flash", api_key="key")
+    payload = {"candidates": [{"content": {"parts": [{"text": "hallo"}]}}]}
+    with patch("urllib.request.urlopen", return_value=_fake_response(payload)):
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "hallo"
+
+
+def test_call_gemini_unexpected_response_raises():
+    # Arrange: response missing the expected shape
+    cfg = ai.AIConfig(provider="gemini", model="gemini-2.5-flash", api_key="key")
+    with patch("urllib.request.urlopen", return_value=_fake_response({"nope": True})):
+        # Act / Assert
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "unexpected Gemini response" in str(exc)
+
+
+def test_call_gemini_retry_after_header_controls_backoff():
+    # Arrange: first attempt 429s with an explicit Retry-After, second succeeds
+    cfg = ai.AIConfig(provider="gemini", model="m", api_key="key")
+    payload = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+    with patch(
+        "urllib.request.urlopen", side_effect=[_http_429("7"), _fake_response(payload)]
+    ), patch("anki_telegram.ai.time.sleep") as mock_sleep:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "ok"
+    mock_sleep.assert_called_once_with(7.0)
+
+
+def test_call_gemini_invalid_retry_after_falls_back_to_default_delay():
+    # Arrange: boundary — a non-numeric Retry-After must not crash the retry
+    cfg = ai.AIConfig(provider="gemini", model="m", api_key="key")
+    payload = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[_http_429("not-a-number"), _fake_response(payload)],
+    ), patch("anki_telegram.ai.time.sleep") as mock_sleep:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "ok"
+    mock_sleep.assert_called_once_with(3.0)
+
+
+def test_call_gemini_falls_back_to_secondary_model_after_rate_limit():
+    # Arrange: primary model 429s on both its own attempts, fallback then succeeds
+    cfg = ai.AIConfig(
+        provider="gemini",
+        model="gemini-2.5-pro",
+        api_key="key",
+        fallback_model="gemini-2.5-flash-lite",
+    )
+    payload = {"candidates": [{"content": {"parts": [{"text": "fallback ok"}]}}]}
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=[_http_429(), _http_429(), _fake_response(payload)],
+    ), patch("anki_telegram.ai.time.sleep") as mock_sleep:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "fallback ok"
+    mock_sleep.assert_called_once()  # one backoff inside the primary's own retry
+
+
+def test_call_gemini_no_fallback_when_model_is_its_own_fallback():
+    # Arrange: edge case — fallback_model equal to the primary is a no-op
+    cfg = ai.AIConfig(provider="gemini", model="m", api_key="key", fallback_model="m")
+    with patch(
+        "urllib.request.urlopen", side_effect=[_http_429(), _http_429()]
+    ), patch("anki_telegram.ai.time.sleep"):
+        # Act / Assert
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "HTTP 429" in str(exc)
+
+
+def test_call_gemini_no_fallback_on_non_429_error():
+    # Arrange: fallback configured, but the error condition doesn't qualify
+    cfg = ai.AIConfig(provider="gemini", model="m", api_key="key", fallback_model="other")
+    err = urllib.error.HTTPError("url", 500, "Server Error", {}, io.BytesIO(b"boom"))
+    with patch("urllib.request.urlopen", side_effect=[err, err]), patch("anki_telegram.ai.time.sleep"):
+        # Act / Assert
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "HTTP 500" in str(exc)
+
+
+# -- ai._call_agy_cli (via call_ai) -------------------------------------------
+
+
+def _fake_proc(returncode=0, stdout="", stderr=""):
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.stdout = stdout
+    proc.stderr = stderr
+    return proc
+
+
+def test_call_agy_cli_success():
+    # Arrange
+    cfg = ai.AIConfig(provider="agy", model="Gemini 3.5 Flash (Medium)", agy_bin="agy")
+    with patch(
+        "anki_telegram.ai.subprocess.run", return_value=_fake_proc(0, "hallo welt\n")
+    ) as mock_run:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "hallo welt"
+    cmd = mock_run.call_args[0][0]
+    assert cmd == ["agy", "--model", "Gemini 3.5 Flash (Medium)", "-p", "sys\n\nusr"]
+
+
+def test_call_agy_cli_retries_when_output_is_blank():
+    # Arrange: edge case — returncode 0 with empty stdout must still retry
+    cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
+    with patch(
+        "anki_telegram.ai.subprocess.run",
+        side_effect=[_fake_proc(0, "   ", ""), _fake_proc(0, "done", "")],
+    ), patch("anki_telegram.ai.time.sleep") as mock_sleep:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "done"
+    mock_sleep.assert_called_once()
+
+
+def test_call_agy_cli_exhausts_retries_raises():
+    # Arrange: error condition — both attempts fail
+    cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
+    fail = _fake_proc(1, "", "boom")
+    with patch("anki_telegram.ai.subprocess.run", side_effect=[fail, fail]), patch(
+        "anki_telegram.ai.time.sleep"
+    ):
+        # Act / Assert
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "boom" in str(exc)
+
+
+# -- bot._ai_config_from_env ---------------------------------------------------
+
+
+def _env_config(**env):
+    # clear=True: isolate from the real process environment, not just overlay it
+    with patch.dict(os.environ, env, clear=True):
+        return _ai_config_from_env()
+
+
+def test_ai_config_from_env_defaults_to_claude():
+    # Arrange / Act: no env at all
+    cfg = _env_config()
+    # Assert
+    assert cfg.provider == "claude"
+    assert cfg.model == "haiku"
+    assert cfg.fallback_model == ""
+
+
+def test_ai_config_from_env_unknown_provider_raises():
+    # Arrange / Act / Assert: error condition
+    try:
+        _env_config(AI_PROVIDER="bogus")
+        assert False, "expected SystemExit"
+    except SystemExit:
+        pass
+
+
+def test_ai_config_from_env_provider_is_trimmed_and_lowercased():
+    # Arrange: boundary — stray whitespace/case in the env var
+    cfg = _env_config(AI_PROVIDER=" Gemini ")
+    # Assert
+    assert cfg.provider == "gemini"
+
+
+def test_ai_config_from_env_agy_reads_bin_and_model_override():
+    # Arrange / Act
+    cfg = _env_config(AI_PROVIDER="agy", AGY_BIN="/opt/agy/bin/agy", AGY_MODEL="custom-model")
+    # Assert
+    assert cfg.provider == "agy"
+    assert cfg.agy_bin == "/opt/agy/bin/agy"
+    assert cfg.model == "custom-model"
+
+
+def test_ai_config_from_env_gemini_fallback_defaults_and_overrides():
+    # Arrange / Act
+    default_cfg = _env_config(AI_PROVIDER="gemini")
+    override_cfg = _env_config(AI_PROVIDER="gemini", GEMINI_FALLBACK_MODEL="gemini-2.0-flash")
+    # Assert
+    assert default_cfg.fallback_model == "gemini-2.5-flash-lite"
+    assert override_cfg.fallback_model == "gemini-2.0-flash"
 
 
 if __name__ == "__main__":
