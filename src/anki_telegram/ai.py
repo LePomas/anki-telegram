@@ -266,9 +266,13 @@ need one. When you do add one, put it in BOTH the German field (as a German
 example) and the translation field, each on its own line below the headword/
 translation (a single "<br>" between them, no other separator) — but the copy
 in the translation field must be TRANSLATED, not the raw German sentence.
-Example for a Spanish translation field:
+The headword/translation line MUST end with a period right before the
+"<br>" — the "<br>" tag alone does not make text-to-speech pause, only
+sentence-ending punctuation does, and without it the headword runs straight
+into the example with no pause. Example for a Spanish translation field:
 WRONG: "Hábil · Er ist sehr geschickt mit den Händen."
-RIGHT: "Hábil<br>Es muy hábil con las manos."
+WRONG: "Hábil<br>Es muy hábil con las manos." (missing period before <br>)
+RIGHT: "Hábil.<br>Es muy hábil con las manos."
 
 The German field is read aloud by text-to-speech verbatim, so keep it plainly
 speakable: ordinary sentence punctuation only (periods, commas) and the "<br>"
@@ -276,7 +280,8 @@ line break before an example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
 read as literal symbols. Use an actual "<br>" tag, never a literal "\n"
 character — Anki fields are HTML, so a bare newline renders as nothing and
-TTS won't pause on it.
+TTS won't pause on it. The line break by itself still isn't enough for a
+TTS pause — always end the headword/translation with a period first.
 
 Leave audio/sound fields and ID/timestamp-like fields empty ("").
 Reply with ONLY a JSON object mapping every field name to its value."""
@@ -310,7 +315,9 @@ Add an example sentence to BOTH the German field and its paired translation
 field, each on its own line below the existing headword/translation (a single
 "<br>" between them, no other separator) — the copy in the translation field
 must be TRANSLATED, not the raw German sentence. Leave every other field
-exactly as given.
+exactly as given. The headword/translation MUST end with a period right
+before the "<br>" (add one if it's missing) — the "<br>" tag alone does not
+make text-to-speech pause, only sentence-ending punctuation does.
 
 Keep every field monolingual: a German field holds ONLY German, a translation
 field holds ONLY the translation. Never append the other language, or mix
@@ -322,7 +329,8 @@ line break before the example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
 read as literal symbols. Use an actual "<br>" tag, never a literal "\n"
 character — Anki fields are HTML, so a bare newline renders as nothing and
-TTS won't pause on it.
+TTS won't pause on it. The line break by itself still isn't enough for a
+TTS pause — always end the headword/translation with a period first.
 
 Reply with ONLY a JSON object mapping every field name to its (possibly
 updated) value."""
