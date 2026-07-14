@@ -15,7 +15,7 @@ uv run anki-telegram --once             # process pending Telegram updates and e
 uv run python tests/test_helpers.py     # run the test suite
 ```
 
-There is no pytest/lint/type-check setup — `tests/test_helpers.py` is a standalone script (not pytest-based) that collects every `test_*` function from its own globals and runs them in a loop under `if __name__ == "__main__"`. Run it directly with `python`, not `pytest`. It only covers pure logic (field-name heuristics, search-string escaping, JSON extraction) — nothing that touches a real Anki collection, AnkiWeb, or the `claude` CLI.
+There is no pytest/lint/type-check setup — `tests/test_helpers.py` is a standalone script (not pytest-based) that collects every `test_*` function from its own globals and runs them in a loop under `if __name__ == "__main__"`. Run it directly with `python`, not `pytest`. It covers pure logic (field-name heuristics, search-string escaping, JSON extraction) plus `Bot`'s message-bookkeeping methods (`_send_tracked`, `_update_menu`, `_collapse_menus`) exercised against `MagicMock`/`SimpleNamespace` stand-ins for `Telegram` — nothing touches a real Anki collection, AnkiWeb, or the `claude` CLI.
 
 Config comes from a `.env` file (see `.env.example` for the full list) loaded manually by `bot.load_env_file` — required vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `ANKIWEB_USERNAME`, `ANKIWEB_PASSWORD`.
 
@@ -33,9 +33,11 @@ Three modules, each with one job:
 
 Callback buttons encode intent as `callback_data` prefixes dispatched in `Bot.on_callback`: `opt:<action>` (skip/create/manual/edit/confirm/cancel) and `deck:<index>` (index into the last-sent deck list — stale if decks changed since, hence the bounds check).
 
-Flow for a new word (`on_new_word`): sync AnkiWeb (full download allowed) → `ai.analyze_word` → `AnkiStore.search` across the word's inflected forms → present matches split into "already a card" (hit in the note's main field) vs "appears inside another card" (hit in some other field, e.g. an example sentence) → offer skip/create/manual/cancel.
+Every keyboard step in a session (choice → deck pick → preview → settings submenus) edits one **anchor message** in place via `Bot._update_menu`/`Session.anchor_message_id`, instead of sending a new message each step — a busy chat with several words in flight doesn't fill up with stale button messages. The one exception is `prompt_manual`, which still sends a standalone message: Telegram can't attach `force_reply` to an edit, and that prompt needs the user's plain-text reply routed back via `message_sid`. `Telegram.edit` returns the id of the message that now holds the text (normally the same id, but a new one if Telegram rejected the edit and it fell back to `send` — `_update_menu` re-anchors to that id).
 
-"Create card" mirrors the target deck's *actual* note type and existing notes (`AnkiStore.deck_format`, sampled from the deck's most common notetype) rather than any hardcoded template — this is why field names, languages, and formatting conventions in drafted cards come from the user's own collection.
+Flow for a new word (`on_new_word`): sync AnkiWeb (full download allowed) → `ai.analyze_word` → `AnkiStore.search` across the word's inflected forms → present matches split into "already a card" (hit in the note's main field) vs "appears inside another card" (hit in some other field, e.g. an example sentence) → offer skip/create/manual/cancel, all in that one anchor message.
+
+"Create card" mirrors the target deck's *actual* note type and existing notes (`AnkiStore.deck_format`, sampled from the deck's most common notetype) rather than any hardcoded template — this is why field names, languages, and formatting conventions in drafted cards come from the user's own collection. The preview keyboard offers both "Write it myself" (blank manual entry) and "Edit fields" (manual entry prefilled with the AI draft) since the original choice message's "Write it myself" button is gone once the anchor has moved on to the preview.
 
 ### Field-kind heuristics (`anki_store.py`)
 

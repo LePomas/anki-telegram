@@ -28,7 +28,12 @@ bot: laufen
 Picking **Create card** drafts all fields with Claude, mirroring the note
 type, formatting, and languages of real notes from your chosen target deck,
 shows a preview, and saves on confirmation (with generated audio in the
-deck's audio field, if it has one).
+deck's audio field, if it has one). The preview offers **Write it myself**
+and **Edit fields** (prefilled with the draft) if you'd rather not keep it.
+
+The whole thing — choice, deck pick if needed, preview, add/remove example —
+plays out by editing a single message in place, so a chat with several words
+in flight doesn't fill up with old button messages.
 
 ## Setup
 

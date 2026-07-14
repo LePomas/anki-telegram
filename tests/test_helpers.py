@@ -379,6 +379,110 @@ def test_collapse_menus_on_empty_thread_is_a_no_op():
     fake_tg.clear_keyboard.assert_not_called()
 
 
+def test_telegram_edit_keyboard_none_leaves_reply_markup_untouched():
+    # Arrange: `None` means "don't mention reply_markup" — used by callers
+    # (skip/cancel/confirm) that clear buttons via a separate _collapse_menus
+    # call instead.
+    tg = Telegram("token")
+    with patch.object(tg, "call") as mock_call:
+        # Act
+        result = tg.edit(42, 99, "hi", keyboard=None)
+    # Assert
+    mock_call.assert_called_once_with(
+        "editMessageText", chat_id=42, message_id=99, text="hi", parse_mode="HTML"
+    )
+    assert result == 99
+
+
+def test_telegram_edit_keyboard_empty_list_clears_reply_markup():
+    # Arrange: boundary — `[]` must still be sent (unlike `send`'s truthy
+    # check), since it's the only way `_update_menu` can explicitly strip
+    # buttons from an anchor message on a terminal edit.
+    tg = Telegram("token")
+    with patch.object(tg, "call") as mock_call:
+        # Act
+        result = tg.edit(42, 99, "hi", keyboard=[])
+    # Assert
+    mock_call.assert_called_once_with(
+        "editMessageText",
+        chat_id=42,
+        message_id=99,
+        text="hi",
+        parse_mode="HTML",
+        reply_markup={"inline_keyboard": []},
+    )
+    assert result == 99
+
+
+def test_telegram_edit_falls_back_to_send_and_returns_new_message_id():
+    # Arrange: error condition — Telegram rejects the edit (e.g. message too
+    # old); edit() must fall back to send() and hand back *that* message's id
+    # so callers can re-anchor.
+    tg = Telegram("token")
+    kb = [[{"text": "x", "callback_data": "y"}]]
+    with patch.object(tg, "call", side_effect=RuntimeError("boom")), patch.object(
+        tg, "send", return_value={"message_id": 123}
+    ) as mock_send:
+        # Act
+        result = tg.edit(42, 99, "hi", keyboard=kb)
+    # Assert
+    mock_send.assert_called_once_with(42, "hi", kb)
+    assert result == 123
+
+
+# -- bot._update_menu (anchor-message editing) ----------------------------------
+
+
+def test_update_menu_sends_first_message_and_sets_anchor():
+    # Arrange: no anchor yet — must behave like _send_tracked
+    fake_tg = MagicMock()
+    fake_tg.send.return_value = {"message_id": 5}
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42), message_sid={})
+    session = Session(sid=7)
+    kb = [[{"text": "x", "callback_data": "y"}]]
+    # Act
+    Bot._update_menu(fake_self, session, "hi", kb)
+    # Assert
+    fake_tg.send.assert_called_once_with(42, "hi", kb)
+    fake_tg.edit.assert_not_called()
+    assert session.anchor_message_id == 5
+    assert session.menu_message_ids == [5]
+    assert fake_self.message_sid == {5: 7}
+
+
+def test_update_menu_edits_anchor_in_place_on_later_calls():
+    # Arrange: anchor already set from an earlier step
+    fake_tg = MagicMock()
+    fake_tg.edit.return_value = 5  # edit succeeded, same message id
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42), message_sid={5: 7})
+    session = Session(sid=7, anchor_message_id=5, menu_message_ids=[5])
+    kb = [[{"text": "a", "callback_data": "b"}]]
+    # Act
+    Bot._update_menu(fake_self, session, "next step", kb)
+    # Assert
+    fake_tg.edit.assert_called_once_with(42, 5, "next step", kb)
+    fake_tg.send.assert_not_called()
+    assert session.anchor_message_id == 5
+    assert session.menu_message_ids == [5]  # not duplicated
+
+
+def test_update_menu_rebinds_anchor_when_edit_falls_back_to_a_new_message():
+    # Arrange: Telegram.edit already resolved the API-level fallback and
+    # returned the id of the message that now actually holds the text —
+    # _update_menu must follow it, not keep pointing at the dead one.
+    fake_tg = MagicMock()
+    fake_tg.edit.return_value = 9
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42), message_sid={5: 7})
+    session = Session(sid=7, anchor_message_id=5, menu_message_ids=[5])
+    kb = [[{"text": "a", "callback_data": "b"}]]
+    # Act
+    Bot._update_menu(fake_self, session, "next step", kb)
+    # Assert
+    assert session.anchor_message_id == 9
+    assert fake_self.message_sid == {5: 7, 9: 7}
+    assert session.menu_message_ids == [5, 9]
+
+
 # -- bot._friendly_ai_error ----------------------------------------------------
 
 
