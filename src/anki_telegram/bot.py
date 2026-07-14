@@ -448,7 +448,10 @@ class Bot:
                     "to the one you mean.",
                 )
                 return
-        self.on_new_word(text)
+        for line in text.splitlines():
+            line = line.strip()
+            if line:
+                self.on_new_word(line)
 
     def on_cancel(self, reply_to: int | None) -> None:
         sid = self.message_sid.get(reply_to) if reply_to is not None else None

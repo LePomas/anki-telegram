@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import subprocess
 import threading
 import time
@@ -20,8 +19,6 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 _gemini_lock = threading.Lock()  # ponytail: global lock, per-model locks if throughput matters
-
-_JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 @dataclass
@@ -217,11 +214,14 @@ def _call_ollama(model: str, system: str, user: str, host: str, api_key: str = "
 
 
 def extract_json(text: str) -> dict:
-    """Parse the first JSON object out of a model response."""
-    match = _JSON_RE.search(text)
-    if not match:
+    """Parse the first JSON object out of a model response, ignoring any
+    trailing text/objects after it (e.g. a model echoing one JSON blob per
+    input line)."""
+    start = text.find("{")
+    if start == -1:
         raise ValueError(f"no JSON in model response: {text[:200]}")
-    return json.loads(match.group(0))
+    obj, _ = json.JSONDecoder().raw_decode(text, start)
+    return obj
 
 
 ANALYZE_SYSTEM = """\
