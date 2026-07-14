@@ -178,20 +178,24 @@ class Telegram:
             params["reply_markup"] = {"force_reply": True, "selective": True}
         return self.call("sendMessage", **params)
 
-    def edit(self, chat_id: int, message_id: int, text: str, keyboard: list | None = None) -> None:
+    def edit(self, chat_id: int, message_id: int, text: str, keyboard: list | None = None) -> int:
+        """Returns the id of the message that now holds `text` — same as
+        `message_id` on success, or a new message's id if Telegram rejected
+        the edit and this fell back to sending."""
         params: dict = {
             "chat_id": chat_id,
             "message_id": message_id,
             "text": text,
             "parse_mode": "HTML",
         }
-        if keyboard:
+        if keyboard is not None:
             params["reply_markup"] = {"inline_keyboard": keyboard}
         try:
             self.call("editMessageText", **params)
+            return message_id
         except (RuntimeError, urllib.error.HTTPError) as exc:
             log.warning("editMessageText failed (%s); sending instead", exc)
-            self.send(chat_id, text, keyboard)
+            return self.send(chat_id, text, keyboard)["message_id"]
 
     def clear_keyboard(self, chat_id: int, message_id: int) -> None:
         # edit()'s `if keyboard:` can only ever set a non-empty keyboard, never
@@ -334,6 +338,7 @@ class Session:
     providers: list[str] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
+    anchor_message_id: int | None = None  # the one message this word's flow edits in place
 
 
 class Bot:
@@ -376,6 +381,25 @@ class Bot:
     ) -> None:
         msg = self.tg.send(self.cfg.chat_id, text, keyboard, force_reply=force_reply)
         self.message_sid[msg["message_id"]] = session.sid
+        if keyboard:
+            session.menu_message_ids.append(msg["message_id"])
+
+    def _update_menu(self, session: Session, text: str, keyboard: list | None = None) -> None:
+        """Edit this word's one anchor message in place (choice → deck pick →
+        preview all reuse it) instead of spawning a new message each step —
+        keeps a busy chat with several words in flight from filling up with
+        stale button messages. Sends fresh only the first time."""
+        if session.anchor_message_id is not None:
+            new_id = self.tg.edit(self.cfg.chat_id, session.anchor_message_id, text, keyboard)
+            if new_id != session.anchor_message_id:
+                self.message_sid[new_id] = session.sid
+                session.anchor_message_id = new_id
+            if keyboard and session.anchor_message_id not in session.menu_message_ids:
+                session.menu_message_ids.append(session.anchor_message_id)
+            return
+        msg = self.tg.send(self.cfg.chat_id, text, keyboard)
+        self.message_sid[msg["message_id"]] = session.sid
+        session.anchor_message_id = msg["message_id"]
         if keyboard:
             session.menu_message_ids.append(msg["message_id"])
 
@@ -523,7 +547,7 @@ class Bot:
         keyboard.append([opt_btn("Write it myself", "manual", session.sid)])
         keyboard.append([opt_btn("Cancel", "cancel", session.sid)])
 
-        self._send_tracked(session, "\n".join(lines), keyboard)
+        self._update_menu(session, "\n".join(lines), keyboard)
 
     # -- flow: option picked ---------------------------------------------------
 
@@ -603,7 +627,7 @@ class Bot:
             [deck_btn(("✅ " if d == current else "") + d, session.sid, i)]
             for i, d in enumerate(decks)
         ]
-        self._send_tracked(session, "Pick the target deck:", keyboard)
+        self._update_menu(session, "Pick the target deck:", keyboard)
 
     def on_deck_picked(self, session: Session, index: int) -> None:
         decks = session.decks or self.store.deck_names()
@@ -615,8 +639,12 @@ class Bot:
             self.state.data["read_deck"] = deck
             self.state.save()
             self.sessions.pop(session.sid, None)
-            self.tg.send(self.cfg.chat_id, f"Search scope: <b>{esc(deck or 'whole collection')}</b>")
-            self._collapse_menus(session)
+            self.tg.edit(
+                self.cfg.chat_id,
+                session.anchor_message_id,
+                f"Search scope: <b>{esc(deck or 'whole collection')}</b>",
+                [],
+            )
             return
         self.state.data["deck"] = deck
         self.state.save()
@@ -624,8 +652,9 @@ class Bot:
             self.draft_and_preview(session, deck)
         else:
             self.sessions.pop(session.sid, None)
-            self.tg.send(self.cfg.chat_id, f"Target deck: <b>{esc(deck)}</b>")
-            self._collapse_menus(session)
+            self.tg.edit(
+                self.cfg.chat_id, session.anchor_message_id, f"Target deck: <b>{esc(deck)}</b>", []
+            )
 
     def prompt_read_deck(self, session: Session) -> None:
         decks = ["", *self.store.deck_names()]  # "" = whole collection
@@ -636,7 +665,7 @@ class Bot:
             [deck_btn(("✅ " if d == current else "") + (d or "🌐 Whole collection"), session.sid, i)]
             for i, d in enumerate(decks)
         ]
-        self._send_tracked(session, "Pick search scope (where to look for existing cards):", keyboard)
+        self._update_menu(session, "Pick search scope (where to look for existing cards):", keyboard)
 
     def prompt_provider(self, session: Session) -> None:
         providers = available_providers()
@@ -649,7 +678,7 @@ class Bot:
             [btn(("✅ " if p == current else "") + p, f"prov:{session.sid}:{i}")]
             for i, p in enumerate(providers)
         ]
-        self._send_tracked(session, "Pick AI provider:", keyboard)
+        self._update_menu(session, "Pick AI provider:", keyboard)
 
     def on_provider_picked(self, session: Session, index: int) -> None:
         providers = session.providers
@@ -667,8 +696,12 @@ class Bot:
         self.state.data.pop("ai_model", None)
         self.state.save()
         self.sessions.pop(session.sid, None)
-        self.tg.send(self.cfg.chat_id, f"AI provider: <b>{esc(f'{candidate.provider}/{candidate.model}')}</b>")
-        self._collapse_menus(session)
+        self.tg.edit(
+            self.cfg.chat_id,
+            session.anchor_message_id,
+            f"AI provider: <b>{esc(f'{candidate.provider}/{candidate.model}')}</b>",
+            [],
+        )
 
     def prompt_model(self, session: Session) -> None:
         models = _MODELS_BY_PROVIDER.get(self.cfg.ai.provider)
@@ -684,7 +717,7 @@ class Bot:
             [btn(("✅ " if m == current else "") + m, f"model:{session.sid}:{i}")]
             for i, m in enumerate(models)
         ]
-        self._send_tracked(session, "Pick AI model:", keyboard)
+        self._update_menu(session, "Pick AI model:", keyboard)
 
     def on_model_picked(self, session: Session, index: int) -> None:
         models = session.models
@@ -696,8 +729,12 @@ class Bot:
         self.state.data["ai_model"] = model
         self.state.save()
         self.sessions.pop(session.sid, None)
-        self.tg.send(self.cfg.chat_id, f"AI model: <b>{esc(f'{self.cfg.ai.provider}/{model}')}</b>")
-        self._collapse_menus(session)
+        self.tg.edit(
+            self.cfg.chat_id,
+            session.anchor_message_id,
+            f"AI model: <b>{esc(f'{self.cfg.ai.provider}/{model}')}</b>",
+            [],
+        )
 
     def open_settings(self) -> None:
         session = self._new_session()
@@ -716,7 +753,7 @@ class Bot:
             [opt_btn("Change AI model", "menu_model", session.sid)],
             [opt_btn("Close", "menu_close", session.sid)],
         ]
-        self._send_tracked(session, "\n".join(lines), keyboard)
+        self._update_menu(session, "\n".join(lines), keyboard)
 
     # -- flow: draft + preview -------------------------------------------------
 
@@ -774,10 +811,11 @@ class Bot:
         else:
             keyboard.append([opt_btn("➕ Add example sentence", "add_example", session.sid)])
         keyboard.append(
-            [opt_btn("Edit fields", "edit", session.sid), opt_btn("Cancel", "cancel", session.sid)]
+            [opt_btn("Write it myself", "manual", session.sid), opt_btn("Edit fields", "edit", session.sid)]
         )
+        keyboard.append([opt_btn("Cancel", "cancel", session.sid)])
         session.phase = "awaiting_confirm"
-        self._send_tracked(session, "\n".join(lines), keyboard)
+        self._update_menu(session, "\n".join(lines), keyboard)
 
     def add_example(self, session: Session) -> None:
         fmt = session.deck_format
