@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import ai
@@ -58,6 +58,22 @@ _DEFAULT_MODELS = {
     "ollama": "nemotron-3-ultra",
     # Antigravity CLI, billed through the caller's Google AI Pro/Ultra plan.
     "agy": "Gemini 3.5 Flash (Medium)",
+}
+
+# Picks offered by /settings → "Change AI model". Providers absent here only
+# have the one _DEFAULT_MODELS entry, so no picker is offered for them.
+_MODELS_BY_PROVIDER = {
+    "gemini": ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"],
+    "agy": [
+        "Gemini 3.5 Flash (Low)",
+        "Gemini 3.5 Flash (Medium)",
+        "Gemini 3.5 Flash (High)",
+        "Gemini 3.1 Pro (Low)",
+        "Gemini 3.1 Pro (High)",
+        "Claude Sonnet 4.6 (Thinking)",
+        "Claude Opus 4.6 (Thinking)",
+        "GPT-OSS 120B (Medium)",
+    ],
 }
 
 
@@ -241,6 +257,9 @@ def parse_callback_data(data: str) -> tuple[str, int, int | None]:
     if data.startswith("prov:"):
         _, sid_str, idx_str = data.split(":", 2)
         return "provider_pick", int(sid_str), int(idx_str)
+    if data.startswith("model:"):
+        _, sid_str, idx_str = data.split(":", 2)
+        return "model_pick", int(sid_str), int(idx_str)
     raise ValueError(f"unrecognized callback data: {data}")
 
 
@@ -311,6 +330,7 @@ class Session:
     decks: list[str] = field(default_factory=list)
     deck_pick_reason: str = ""  # "create" (continue to draft), "set" or "read_deck" (just save)
     providers: list[str] = field(default_factory=list)
+    models: list[str] = field(default_factory=list)
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
 
 
@@ -332,6 +352,9 @@ class Bot:
             candidate = _ai_config_from_env(saved_provider)
             if _validate_provider(candidate) is None:
                 self.cfg.ai = candidate
+        saved_model = self.state.data.get("ai_model")
+        if saved_model and saved_model in _MODELS_BY_PROVIDER.get(self.cfg.ai.provider, ()):
+            self.cfg.ai = replace(self.cfg.ai, model=saved_model)
         self.sessions: dict[int, Session] = {}
         # telegram message_id -> sid, for every message that expects a reply
         # (buttons or free text) — lets /cancel and manual-field replies find
@@ -517,12 +540,17 @@ class Bot:
         elif action == "provider_pick":
             assert index is not None
             self.on_provider_picked(session, index)
+        elif action == "model_pick":
+            assert index is not None
+            self.on_model_picked(session, index)
         elif action == "menu_deck":
             self.prompt_deck(session, reason="set")
         elif action == "menu_read_deck":
             self.prompt_read_deck(session)
         elif action == "menu_provider":
             self.prompt_provider(session)
+        elif action == "menu_model":
+            self.prompt_model(session)
         elif action == "menu_close":
             self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "Settings closed.")
@@ -627,9 +655,39 @@ class Bot:
             return
         self.cfg.ai = candidate
         self.state.data["ai_provider"] = provider
+        self.state.data.pop("ai_model", None)
         self.state.save()
         self.sessions.pop(session.sid, None)
         self.tg.send(self.cfg.chat_id, f"AI provider: <b>{esc(f'{candidate.provider}/{candidate.model}')}</b>")
+        self._collapse_menus(session)
+
+    def prompt_model(self, session: Session) -> None:
+        models = _MODELS_BY_PROVIDER.get(self.cfg.ai.provider)
+        if not models:
+            self.tg.send(
+                self.cfg.chat_id,
+                f"'{self.cfg.ai.provider}' only has one model available: {esc(self.cfg.ai.model)}",
+            )
+            return
+        session.models = models
+        current = self.cfg.ai.model
+        keyboard = [
+            [btn(("✅ " if m == current else "") + m, f"model:{session.sid}:{i}")]
+            for i, m in enumerate(models)
+        ]
+        self._send_tracked(session, "Pick AI model:", keyboard)
+
+    def on_model_picked(self, session: Session, index: int) -> None:
+        models = session.models
+        if not 0 <= index < len(models):
+            self.tg.send(self.cfg.chat_id, "Stale model list — try again.")
+            return
+        model = models[index]
+        self.cfg.ai = replace(self.cfg.ai, model=model)
+        self.state.data["ai_model"] = model
+        self.state.save()
+        self.sessions.pop(session.sid, None)
+        self.tg.send(self.cfg.chat_id, f"AI model: <b>{esc(f'{self.cfg.ai.provider}/{model}')}</b>")
         self._collapse_menus(session)
 
     def open_settings(self) -> None:
@@ -646,6 +704,7 @@ class Bot:
             [opt_btn("Change target deck", "menu_deck", session.sid)],
             [opt_btn("Change search scope", "menu_read_deck", session.sid)],
             [opt_btn("Change AI provider", "menu_provider", session.sid)],
+            [opt_btn("Change AI model", "menu_model", session.sid)],
             [opt_btn("Close", "menu_close", session.sid)],
         ]
         self._send_tracked(session, "\n".join(lines), keyboard)
