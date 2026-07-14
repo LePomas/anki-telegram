@@ -61,8 +61,8 @@ _DEFAULT_MODELS = {
 }
 
 
-def _ai_config_from_env() -> ai.AIConfig:
-    provider = os.environ.get("AI_PROVIDER", "claude").strip().lower()
+def _ai_config_from_env(provider: str | None = None) -> ai.AIConfig:
+    provider = (provider or os.environ.get("AI_PROVIDER", "claude")).strip().lower()
     if provider not in _DEFAULT_MODELS:
         raise SystemExit(
             f"unknown AI_PROVIDER {provider!r} — choose one of {sorted(_DEFAULT_MODELS)}"
@@ -79,6 +79,26 @@ def _ai_config_from_env() -> ai.AIConfig:
             "GEMINI_FALLBACK_MODEL", "gemini-flash-lite-latest" if provider == "gemini" else ""
         ),
     )
+
+
+def _validate_provider(cfg: ai.AIConfig) -> str | None:
+    """None if usable, else a user-facing reason it isn't."""
+    if cfg.provider == "claude" and shutil.which(cfg.claude_bin) is None:
+        return f"'{cfg.claude_bin}' not found — install Claude Code or set CLAUDE_BIN"
+    if cfg.provider == "agy" and shutil.which(cfg.agy_bin) is None:
+        return f"'{cfg.agy_bin}' not found — install the Antigravity CLI or set AGY_BIN"
+    if cfg.provider in ("gemini", "openrouter") and not cfg.api_key:
+        return f"AI_PROVIDER={cfg.provider} needs {cfg.provider.upper()}_API_KEY set"
+    return None
+
+
+def available_providers() -> list[str]:
+    """Providers whose env-configured keys/binaries actually check out right now."""
+    return [
+        provider
+        for provider in _DEFAULT_MODELS
+        if _validate_provider(_ai_config_from_env(provider)) is None
+    ]
 
 
 @dataclass
@@ -218,6 +238,9 @@ def parse_callback_data(data: str) -> tuple[str, int, int | None]:
     if data.startswith("deck:"):
         _, sid_str, idx_str = data.split(":", 2)
         return "deck_pick", int(sid_str), int(idx_str)
+    if data.startswith("prov:"):
+        _, sid_str, idx_str = data.split(":", 2)
+        return "provider_pick", int(sid_str), int(idx_str)
     raise ValueError(f"unrecognized callback data: {data}")
 
 
@@ -266,7 +289,8 @@ HELP = (
     "own thread. When asked to write fields yourself, reply directly to that "
     "prompt (tap it, then Reply) so I know which word it's for.\n\n"
     "Commands:\n"
-    "/deck — choose the target deck\n"
+    "/settings — configure target deck, search scope, and AI provider\n"
+    "/deck — choose the target deck (shortcut into /settings)\n"
     "/cancel — reply to a word's message to abandon just that one, or send "
     "bare to abandon everything in flight\n"
     "/help — this message"
@@ -285,7 +309,8 @@ class Session:
     draft: dict = field(default_factory=dict)
     draft_model: str = ""  # "provider/model" that produced `draft`, "" if hand-typed
     decks: list[str] = field(default_factory=list)
-    deck_pick_reason: str = ""  # "create" (continue to draft) or "set" (just save)
+    deck_pick_reason: str = ""  # "create" (continue to draft), "set" or "read_deck" (just save)
+    providers: list[str] = field(default_factory=list)
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
 
 
@@ -302,6 +327,11 @@ class Bot:
         ):
             self.state.data["deck"] = cfg.write_deck
             self.state.save()
+        saved_provider = self.state.data.get("ai_provider")
+        if saved_provider in _DEFAULT_MODELS:
+            candidate = _ai_config_from_env(saved_provider)
+            if _validate_provider(candidate) is None:
+                self.cfg.ai = candidate
         self.sessions: dict[int, Session] = {}
         # telegram message_id -> sid, for every message that expects a reply
         # (buttons or free text) — lets /cancel and manual-field replies find
@@ -323,6 +353,9 @@ class Bot:
         self.message_sid[msg["message_id"]] = session.sid
         if keyboard:
             session.menu_message_ids.append(msg["message_id"])
+
+    def effective_read_deck(self) -> str:
+        return self.state.data.get("read_deck", self.cfg.read_deck)
 
     def _collapse_menus(self, session: Session) -> None:
         """Remove buttons from every menu this word's thread has sent so far,
@@ -364,6 +397,9 @@ class Bot:
         if cmd == "/deck":
             session = self._new_session(phase="awaiting_deck")
             self.prompt_deck(session, reason="set")
+            return
+        if cmd == "/settings":
+            self.open_settings()
             return
 
         sid = self.message_sid.get(reply_to) if reply_to is not None else None
@@ -427,7 +463,7 @@ class Bot:
                 self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(_friendly_ai_error(exc))}")
                 return
 
-        matches = self.store.search(analysis["search_terms"], read_deck=self.cfg.read_deck or None)
+        matches = self.store.search(analysis["search_terms"], read_deck=self.effective_read_deck() or None)
         main_hits = [m for m in matches if m.in_main_field]
         sentence_hits = [m for m in matches if not m.in_main_field]
 
@@ -478,6 +514,19 @@ class Bot:
         if action == "deck_pick":
             assert index is not None
             self.on_deck_picked(session, index)
+        elif action == "provider_pick":
+            assert index is not None
+            self.on_provider_picked(session, index)
+        elif action == "menu_deck":
+            self.prompt_deck(session, reason="set")
+        elif action == "menu_read_deck":
+            self.prompt_read_deck(session)
+        elif action == "menu_provider":
+            self.prompt_provider(session)
+        elif action == "menu_close":
+            self.sessions.pop(sid, None)
+            self.tg.edit(self.cfg.chat_id, message_id, "Settings closed.")
+            self._collapse_menus(session)
         elif action == "skip":
             self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "👍 Skipped — card already exists.")
@@ -525,6 +574,13 @@ class Bot:
             self.tg.send(self.cfg.chat_id, "Stale deck list — try again.")
             return
         deck = decks[index]
+        if session.deck_pick_reason == "read_deck":
+            self.state.data["read_deck"] = deck
+            self.state.save()
+            self.sessions.pop(session.sid, None)
+            self.tg.send(self.cfg.chat_id, f"Search scope: <b>{esc(deck or 'whole collection')}</b>")
+            self._collapse_menus(session)
+            return
         self.state.data["deck"] = deck
         self.state.save()
         if session.deck_pick_reason == "create" and session.analysis:
@@ -533,6 +589,66 @@ class Bot:
             self.sessions.pop(session.sid, None)
             self.tg.send(self.cfg.chat_id, f"Target deck: <b>{esc(deck)}</b>")
             self._collapse_menus(session)
+
+    def prompt_read_deck(self, session: Session) -> None:
+        decks = ["", *self.store.deck_names()]  # "" = whole collection
+        session.decks = decks
+        session.deck_pick_reason = "read_deck"
+        current = self.effective_read_deck()
+        keyboard = [
+            [deck_btn(("✅ " if d == current else "") + (d or "🌐 Whole collection"), session.sid, i)]
+            for i, d in enumerate(decks)
+        ]
+        self._send_tracked(session, "Pick search scope (where to look for existing cards):", keyboard)
+
+    def prompt_provider(self, session: Session) -> None:
+        providers = available_providers()
+        if not providers:
+            self.tg.send(self.cfg.chat_id, "No AI provider is fully configured (missing keys/binaries).")
+            return
+        session.providers = providers
+        current = self.cfg.ai.provider
+        keyboard = [
+            [btn(("✅ " if p == current else "") + p, f"prov:{session.sid}:{i}")]
+            for i, p in enumerate(providers)
+        ]
+        self._send_tracked(session, "Pick AI provider:", keyboard)
+
+    def on_provider_picked(self, session: Session, index: int) -> None:
+        providers = session.providers
+        if not 0 <= index < len(providers):
+            self.tg.send(self.cfg.chat_id, "Stale provider list — try again.")
+            return
+        provider = providers[index]
+        candidate = _ai_config_from_env(provider)
+        err = _validate_provider(candidate)
+        if err:
+            self.tg.send(self.cfg.chat_id, f"⚠️ {esc(err)}")
+            return
+        self.cfg.ai = candidate
+        self.state.data["ai_provider"] = provider
+        self.state.save()
+        self.sessions.pop(session.sid, None)
+        self.tg.send(self.cfg.chat_id, f"AI provider: <b>{esc(f'{candidate.provider}/{candidate.model}')}</b>")
+        self._collapse_menus(session)
+
+    def open_settings(self) -> None:
+        session = self._new_session()
+        deck = self.state.data.get("deck") or "(not set)"
+        read_deck = self.effective_read_deck() or "whole collection"
+        lines = [
+            "<b>Settings</b>",
+            f"Target deck: {esc(deck)}",
+            f"Search scope: {esc(read_deck)}",
+            f"AI provider: {esc(f'{self.cfg.ai.provider}/{self.cfg.ai.model}')}",
+        ]
+        keyboard = [
+            [opt_btn("Change target deck", "menu_deck", session.sid)],
+            [opt_btn("Change search scope", "menu_read_deck", session.sid)],
+            [opt_btn("Change AI provider", "menu_provider", session.sid)],
+            [opt_btn("Close", "menu_close", session.sid)],
+        ]
+        self._send_tracked(session, "\n".join(lines), keyboard)
 
     # -- flow: draft + preview -------------------------------------------------
 
@@ -714,19 +830,9 @@ def main() -> None:
     )
     load_env_file(args.env_file)
     cfg = Config.from_env()
-    if cfg.ai.provider == "claude" and shutil.which(cfg.ai.claude_bin) is None:
-        raise SystemExit(
-            f"'{cfg.ai.claude_bin}' not found — install Claude Code "
-            "(npm install -g @anthropic-ai/claude-code) and log in, "
-            "or set CLAUDE_BIN to its path"
-        )
-    if cfg.ai.provider == "agy" and shutil.which(cfg.ai.agy_bin) is None:
-        raise SystemExit(
-            f"'{cfg.ai.agy_bin}' not found — install the Antigravity CLI and log in, "
-            "or set AGY_BIN to its path"
-        )
-    if cfg.ai.provider in ("gemini", "openrouter") and not cfg.ai.api_key:
-        raise SystemExit(f"AI_PROVIDER={cfg.ai.provider} needs {cfg.ai.provider.upper()}_API_KEY set")
+    err = _validate_provider(cfg.ai)
+    if err:
+        raise SystemExit(err)
     Bot(cfg).run(once=args.once)
 
 
