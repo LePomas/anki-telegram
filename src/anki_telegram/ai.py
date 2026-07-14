@@ -263,8 +263,11 @@ languages within one field.
 Only add an example sentence if the word is ambiguous, has multiple common
 senses, or could otherwise be confused with something else — most words don't
 need one. When you do add one, put it in BOTH the German field (as a German
-example) and the translation field (that same example translated), each
-appended after the headword/translation.
+example) and the translation field, each appended after the headword/
+translation — but the copy in the translation field must be TRANSLATED, not
+the raw German sentence. Example for a Spanish translation field:
+WRONG: "Hábil · Er ist sehr geschickt mit den Händen."
+RIGHT: "Hábil · Es muy hábil con las manos."
 
 The German field is read aloud by text-to-speech verbatim, so keep it plainly
 speakable: ordinary sentence punctuation only (periods, commas) — no quotation
