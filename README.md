@@ -15,7 +15,9 @@ providers, and `gTTS` for audio. AI defaults to the
 key needed. Set `AI_PROVIDER` to route through something else instead:
 Gemini or OpenRouter (free-tier APIs), a local Ollama, or the
 [Antigravity CLI](https://antigravity.google) (`agy`, authenticated by your
-Google AI Pro/Ultra login — also no API key).
+Google AI Pro/Ultra login — also no API key, and typically a more generous
+quota than Claude/Gemini's own free/pro tiers, so it's worth switching to if
+you're getting rate-limited).
 
 ## Flow
 
