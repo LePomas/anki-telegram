@@ -157,6 +157,20 @@ class Telegram:
             log.warning("editMessageText failed (%s); sending instead", exc)
             self.send(chat_id, text, keyboard)
 
+    def clear_keyboard(self, chat_id: int, message_id: int) -> None:
+        # edit()'s `if keyboard:` can only ever set a non-empty keyboard, never
+        # clear one — editMessageReplyMarkup with an explicit empty list is the
+        # only way to actually remove the buttons from an older menu message.
+        try:
+            self.call(
+                "editMessageReplyMarkup",
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup={"inline_keyboard": []},
+            )
+        except (RuntimeError, urllib.error.HTTPError) as exc:
+            log.warning("clearing keyboard on %s failed: %s", message_id, exc)
+
     def typing(self, chat_id: int) -> None:
         try:
             self.call("sendChatAction", chat_id=chat_id, action="typing")
@@ -272,6 +286,7 @@ class Session:
     draft_model: str = ""  # "provider/model" that produced `draft`, "" if hand-typed
     decks: list[str] = field(default_factory=list)
     deck_pick_reason: str = ""  # "create" (continue to draft) or "set" (just save)
+    menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
 
 
 class Bot:
@@ -306,6 +321,14 @@ class Bot:
     ) -> None:
         msg = self.tg.send(self.cfg.chat_id, text, keyboard, force_reply=force_reply)
         self.message_sid[msg["message_id"]] = session.sid
+        if keyboard:
+            session.menu_message_ids.append(msg["message_id"])
+
+    def _collapse_menus(self, session: Session) -> None:
+        """Remove buttons from every menu this word's thread has sent so far,
+        so a stale tap can't act on a session that's about to be gone."""
+        for message_id in session.menu_message_ids:
+            self.tg.clear_keyboard(self.cfg.chat_id, message_id)
 
     # -- update dispatch ----------------------------------------------------
 
@@ -371,16 +394,21 @@ class Bot:
     def on_cancel(self, reply_to: int | None) -> None:
         sid = self.message_sid.get(reply_to) if reply_to is not None else None
         if sid is not None:
-            if self.sessions.pop(sid, None) is not None:
+            session = self.sessions.pop(sid, None)
+            if session is not None:
                 self.tg.send(self.cfg.chat_id, "Cancelled that word.")
+                self._collapse_menus(session)
             else:
                 self.tg.send(self.cfg.chat_id, "Already finished — nothing to cancel.")
             return
-        n = len(self.sessions)
+        sessions = list(self.sessions.values())
         self.sessions.clear()
         self.tg.send(
-            self.cfg.chat_id, f"Cancelled {n} word(s) in flight." if n else "Nothing in flight."
+            self.cfg.chat_id,
+            f"Cancelled {len(sessions)} word(s) in flight." if sessions else "Nothing in flight.",
         )
+        for session in sessions:
+            self._collapse_menus(session)
 
     # -- flow: incoming word --------------------------------------------------
 
@@ -453,9 +481,11 @@ class Bot:
         elif action == "skip":
             self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "👍 Skipped — card already exists.")
+            self._collapse_menus(session)
         elif action == "cancel":
             self.sessions.pop(sid, None)
             self.tg.edit(self.cfg.chat_id, message_id, "Cancelled.")
+            self._collapse_menus(session)
         elif action == "create":
             deck = self.state.data.get("deck")
             if deck and deck in self.store.deck_names():
@@ -476,6 +506,7 @@ class Bot:
         if not decks:
             self.sessions.pop(session.sid, None)
             self.tg.send(self.cfg.chat_id, "No decks in your collection.")
+            self._collapse_menus(session)
             return
         session.decks = decks
         session.deck_pick_reason = reason
@@ -501,6 +532,7 @@ class Bot:
         else:
             self.sessions.pop(session.sid, None)
             self.tg.send(self.cfg.chat_id, f"Target deck: <b>{esc(deck)}</b>")
+            self._collapse_menus(session)
 
     # -- flow: draft + preview -------------------------------------------------
 
@@ -634,6 +666,7 @@ class Bot:
             message_id,
             f"✅ Saved <b>{esc(word)}</b> to <b>{esc(fmt.deck)}</b> and synced.",
         )
+        self._collapse_menus(session)
 
     # -- main loop ------------------------------------------------------------------
 

@@ -5,7 +5,8 @@ so no real CLI or network call ever happens)."""
 import io
 import os
 import urllib.error
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, call, patch
 
 from anki_telegram import ai
 from anki_telegram.anki_store import (
@@ -15,7 +16,14 @@ from anki_telegram.anki_store import (
     main_field,
     strip_html,
 )
-from anki_telegram.bot import _ai_config_from_env, _friendly_ai_error, parse_callback_data
+from anki_telegram.bot import (
+    Bot,
+    Session,
+    Telegram,
+    _ai_config_from_env,
+    _friendly_ai_error,
+    parse_callback_data,
+)
 
 
 def test_main_field():
@@ -316,6 +324,59 @@ def test_post_json_error_never_leaks_query_string_secrets():
         except RuntimeError as exc:
             assert "SECRET123" not in str(exc)
             assert "key=" not in str(exc)
+
+
+# -- bot menu-keyboard collapsing ----------------------------------------------
+
+
+def test_clear_keyboard_sends_explicit_empty_markup():
+    # Arrange: edit()'s truthy-check on `keyboard` can't express "explicitly
+    # empty", so clear_keyboard must go through editMessageReplyMarkup instead.
+    tg = Telegram("token")
+    with patch.object(tg, "call") as mock_call:
+        # Act
+        tg.clear_keyboard(42, 99)
+    # Assert
+    mock_call.assert_called_once_with(
+        "editMessageReplyMarkup", chat_id=42, message_id=99, reply_markup={"inline_keyboard": []}
+    )
+
+
+def test_send_tracked_records_menu_message_ids_only_for_keyboards():
+    # Arrange: one message with buttons, one plain — only the first should
+    # be remembered as a menu to collapse later.
+    fake_tg = MagicMock()
+    fake_tg.send.side_effect = [{"message_id": 1}, {"message_id": 2}]
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42), message_sid={})
+    session = Session(sid=7)
+    # Act
+    Bot._send_tracked(fake_self, session, "menu", keyboard=[[{"text": "x", "callback_data": "y"}]])
+    Bot._send_tracked(fake_self, session, "plain", keyboard=None)
+    # Assert
+    assert session.menu_message_ids == [1]
+    assert fake_self.message_sid == {1: 7, 2: 7}
+
+
+def test_collapse_menus_clears_every_tracked_message():
+    # Arrange
+    fake_tg = MagicMock()
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42))
+    session = Session(sid=7, menu_message_ids=[1, 2, 3])
+    # Act
+    Bot._collapse_menus(fake_self, session)
+    # Assert
+    assert fake_tg.clear_keyboard.call_args_list == [call(42, 1), call(42, 2), call(42, 3)]
+
+
+def test_collapse_menus_on_empty_thread_is_a_no_op():
+    # Arrange: boundary — a session that never sent a keyboard message
+    fake_tg = MagicMock()
+    fake_self = SimpleNamespace(tg=fake_tg, cfg=SimpleNamespace(chat_id=42))
+    session = Session(sid=7)
+    # Act
+    Bot._collapse_menus(fake_self, session)
+    # Assert
+    fake_tg.clear_keyboard.assert_not_called()
 
 
 # -- bot._friendly_ai_error ----------------------------------------------------
