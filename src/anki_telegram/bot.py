@@ -327,6 +327,8 @@ class Session:
     deck_format: DeckFormat | None = None
     draft: dict = field(default_factory=dict)
     draft_model: str = ""  # "provider/model" that produced `draft`, "" if hand-typed
+    example_cache: dict | None = None  # last draft seen with an example, for instant restore
+    example_cache_base: dict | None = None  # that draft with the example line stripped
     decks: list[str] = field(default_factory=list)
     deck_pick_reason: str = ""  # "create" (continue to draft), "set" or "read_deck" (just save)
     providers: list[str] = field(default_factory=list)
@@ -578,6 +580,8 @@ class Bot:
             self.prompt_manual(session, prefill=session.draft)
         elif action == "add_example":
             self.add_example(session)
+        elif action == "remove_example":
+            self.remove_example(session)
         elif action == "confirm":
             self.create_card(session, message_id)
         else:
@@ -759,8 +763,15 @@ class Bot:
                 lines.append(f"<i>{esc(name)}</i>: {esc(session.draft[name])}")
         main = main_field(fmt.field_names)
         has_example = bool(main) and "\n" in session.draft.get(main, "")
+        if has_example:
+            session.example_cache = dict(session.draft)
+            session.example_cache_base = {
+                n: v.split("\n", 1)[0] for n, v in session.draft.items()
+            }
         keyboard = [[opt_btn("⭐ Save card", "confirm", session.sid)]]
-        if not has_example:
+        if has_example:
+            keyboard.append([opt_btn("➖ Remove example sentence", "remove_example", session.sid)])
+        else:
             keyboard.append([opt_btn("➕ Add example sentence", "add_example", session.sid)])
         keyboard.append(
             [opt_btn("Edit fields", "edit", session.sid), opt_btn("Cancel", "cancel", session.sid)]
@@ -772,6 +783,12 @@ class Bot:
         fmt = session.deck_format
         if fmt is None or not session.draft:
             self.tg.send(self.cfg.chat_id, "Nothing to add to — send the word again.")
+            return
+        # if nothing changed since we last had a cached example, restore it
+        # instead of burning another AI call.
+        if session.example_cache is not None and session.example_cache_base == session.draft:
+            session.draft = dict(session.example_cache)
+            self.send_preview(session)
             return
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
@@ -788,6 +805,15 @@ class Bot:
             self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}")
             return
         session.draft = draft
+        self.send_preview(session)
+
+    def remove_example(self, session: Session) -> None:
+        if not session.draft:
+            self.tg.send(self.cfg.chat_id, "Nothing to remove — send the word again.")
+            return
+        session.draft = {
+            n: v.split("\n", 1)[0] if "\n" in v else v for n, v in session.draft.items()
+        }
         self.send_preview(session)
 
     # -- flow: manual fields -----------------------------------------------------
