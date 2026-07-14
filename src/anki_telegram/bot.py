@@ -573,6 +573,8 @@ class Bot:
             self.prompt_manual(session)
         elif action == "edit":
             self.prompt_manual(session, prefill=session.draft)
+        elif action == "add_example":
+            self.add_example(session)
         elif action == "confirm":
             self.create_card(session, message_id)
         else:
@@ -752,12 +754,38 @@ class Bot:
                 continue
             else:
                 lines.append(f"<i>{esc(name)}</i>: {esc(session.draft[name])}")
-        keyboard = [
-            [opt_btn("⭐ Save card", "confirm", session.sid)],
-            [opt_btn("Edit fields", "edit", session.sid), opt_btn("Cancel", "cancel", session.sid)],
-        ]
+        main = main_field(fmt.field_names)
+        has_example = bool(main) and "\n" in session.draft.get(main, "")
+        keyboard = [[opt_btn("⭐ Save card", "confirm", session.sid)]]
+        if not has_example:
+            keyboard.append([opt_btn("➕ Add example sentence", "add_example", session.sid)])
+        keyboard.append(
+            [opt_btn("Edit fields", "edit", session.sid), opt_btn("Cancel", "cancel", session.sid)]
+        )
         session.phase = "awaiting_confirm"
         self._send_tracked(session, "\n".join(lines), keyboard)
+
+    def add_example(self, session: Session) -> None:
+        fmt = session.deck_format
+        if fmt is None or not session.draft:
+            self.tg.send(self.cfg.chat_id, "Nothing to add to — send the word again.")
+            return
+        try:
+            with keep_typing(self.tg, self.cfg.chat_id):
+                draft = ai.add_example(
+                    self.cfg.ai,
+                    fmt.field_names,
+                    fmt.examples,
+                    session.draft,
+                    fmt.deck,
+                    cwd=self.cfg.data_dir,
+                )
+        except Exception as exc:
+            log.exception("add example failed")
+            self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}")
+            return
+        session.draft = draft
+        self.send_preview(session)
 
     # -- flow: manual fields -----------------------------------------------------
 

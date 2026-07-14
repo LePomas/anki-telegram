@@ -297,3 +297,47 @@ def draft_fields(
     raw = call_ai(cfg, DRAFT_SYSTEM, user, cwd)
     drafted = extract_json(raw)
     return {name: str(drafted.get(name, "")) for name in field_names}
+
+
+ADD_EXAMPLE_SYSTEM = """\
+You add an example sentence to an already-drafted Anki flashcard note for a
+German learner deck. You are given the deck's field names, a few existing
+notes to match formatting/language conventions, and the current draft.
+
+Add an example sentence to BOTH the German field and its paired translation
+field, each on its own line below the existing headword/translation (a single
+"\n" between them, no other separator) — the copy in the translation field
+must be TRANSLATED, not the raw German sentence. Leave every other field
+exactly as given.
+
+Keep every field monolingual: a German field holds ONLY German, a translation
+field holds ONLY the translation. Never append the other language, or mix
+languages within one field.
+
+The German field is read aloud by text-to-speech verbatim, so keep it plainly
+speakable: ordinary sentence punctuation only (periods, commas) and the "\n"
+line break before the example — no quotation marks, bullets, middots ("·"),
+slashes, or other decorative separators a TTS engine would mispronounce or
+read as literal symbols.
+
+Reply with ONLY a JSON object mapping every field name to its (possibly
+updated) value."""
+
+
+def add_example(
+    cfg: AIConfig,
+    field_names: list[str],
+    examples: list[dict[str, str]],
+    draft: dict[str, str],
+    deck: str,
+    cwd: Path | None = None,
+) -> dict[str, str]:
+    user = (
+        f"Deck: {deck}\n"
+        f"Fields (in order): {json.dumps(field_names, ensure_ascii=False)}\n"
+        f"Example notes:\n{json.dumps(examples, ensure_ascii=False, indent=1)}\n\n"
+        f"Current draft:\n{json.dumps(draft, ensure_ascii=False, indent=1)}"
+    )
+    raw = call_ai(cfg, ADD_EXAMPLE_SYSTEM, user, cwd)
+    drafted = extract_json(raw)
+    return {name: str(drafted.get(name, draft.get(name, ""))) for name in field_names}
