@@ -264,17 +264,19 @@ Only add an example sentence if the word is ambiguous, has multiple common
 senses, or could otherwise be confused with something else — most words don't
 need one. When you do add one, put it in BOTH the German field (as a German
 example) and the translation field, each on its own line below the headword/
-translation (a single "\n" between them, no other separator) — but the copy
+translation (a single "<br>" between them, no other separator) — but the copy
 in the translation field must be TRANSLATED, not the raw German sentence.
 Example for a Spanish translation field:
 WRONG: "Hábil · Er ist sehr geschickt mit den Händen."
-RIGHT: "Hábil\nEs muy hábil con las manos."
+RIGHT: "Hábil<br>Es muy hábil con las manos."
 
 The German field is read aloud by text-to-speech verbatim, so keep it plainly
-speakable: ordinary sentence punctuation only (periods, commas) and the "\n"
+speakable: ordinary sentence punctuation only (periods, commas) and the "<br>"
 line break before an example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
-read as literal symbols.
+read as literal symbols. Use an actual "<br>" tag, never a literal "\n"
+character — Anki fields are HTML, so a bare newline renders as nothing and
+TTS won't pause on it.
 
 Leave audio/sound fields and ID/timestamp-like fields empty ("").
 Reply with ONLY a JSON object mapping every field name to its value."""
@@ -306,7 +308,7 @@ notes to match formatting/language conventions, and the current draft.
 
 Add an example sentence to BOTH the German field and its paired translation
 field, each on its own line below the existing headword/translation (a single
-"\n" between them, no other separator) — the copy in the translation field
+"<br>" between them, no other separator) — the copy in the translation field
 must be TRANSLATED, not the raw German sentence. Leave every other field
 exactly as given.
 
@@ -315,10 +317,12 @@ field holds ONLY the translation. Never append the other language, or mix
 languages within one field.
 
 The German field is read aloud by text-to-speech verbatim, so keep it plainly
-speakable: ordinary sentence punctuation only (periods, commas) and the "\n"
+speakable: ordinary sentence punctuation only (periods, commas) and the "<br>"
 line break before the example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
-read as literal symbols.
+read as literal symbols. Use an actual "<br>" tag, never a literal "\n"
+character — Anki fields are HTML, so a bare newline renders as nothing and
+TTS won't pause on it.
 
 Reply with ONLY a JSON object mapping every field name to its (possibly
 updated) value."""
