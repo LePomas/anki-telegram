@@ -263,16 +263,18 @@ languages within one field.
 Only add an example sentence if the word is ambiguous, has multiple common
 senses, or could otherwise be confused with something else — most words don't
 need one. When you do add one, put it in BOTH the German field (as a German
-example) and the translation field, each appended after the headword/
-translation — but the copy in the translation field must be TRANSLATED, not
-the raw German sentence. Example for a Spanish translation field:
+example) and the translation field, each on its own line below the headword/
+translation (a single "\n" between them, no other separator) — but the copy
+in the translation field must be TRANSLATED, not the raw German sentence.
+Example for a Spanish translation field:
 WRONG: "Hábil · Er ist sehr geschickt mit den Händen."
-RIGHT: "Hábil · Es muy hábil con las manos."
+RIGHT: "Hábil\nEs muy hábil con las manos."
 
 The German field is read aloud by text-to-speech verbatim, so keep it plainly
-speakable: ordinary sentence punctuation only (periods, commas) — no quotation
-marks, bullets, middots ("·"), slashes, or other decorative separators a TTS
-engine would mispronounce or read as literal symbols.
+speakable: ordinary sentence punctuation only (periods, commas) and the "\n"
+line break before an example — no quotation marks, bullets, middots ("·"),
+slashes, or other decorative separators a TTS engine would mispronounce or
+read as literal symbols.
 
 Leave audio/sound fields and ID/timestamp-like fields empty ("").
 Reply with ONLY a JSON object mapping every field name to its value."""
