@@ -12,8 +12,10 @@ Python library headlessly, plain `urllib` for Telegram and for AI HTTP
 providers, and `gTTS` for audio. AI defaults to the
 [Claude Code CLI](https://claude.com/claude-code) in headless mode
 (`claude -p`), authenticated by your existing Claude subscription — no API
-key needed. Set `AI_PROVIDER` to route through a free-tier API instead:
-Gemini, OpenRouter, or a local Ollama.
+key needed. Set `AI_PROVIDER` to route through something else instead:
+Gemini or OpenRouter (free-tier APIs), a local Ollama, or the
+[Antigravity CLI](https://antigravity.google) (`agy`, authenticated by your
+Google AI Pro/Ultra login — also no API key).
 
 ## Flow
 
@@ -80,7 +82,7 @@ cp .env.example .env   # then fill in the values
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Your numeric user ID (from [@userinfobot](https://t.me/userinfobot)); all other chats are ignored |
 | `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` | AnkiWeb account for sync |
-| `AI_PROVIDER` | Optional: `claude` (default), `gemini`, `openrouter`, or `ollama` |
+| `AI_PROVIDER` | Optional: `claude` (default), `gemini`, `openrouter`, `ollama`, or `agy` |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Optional — long-lived token from `claude setup-token` if the host isn't logged in |
 | `CLAUDE_MODEL` | Optional, passed to `claude --model` (default `haiku`) |
 | `CLAUDE_BIN` | Optional path to the `claude` binary (useful under systemd) |
@@ -88,6 +90,8 @@ cp .env.example .env   # then fill in the values
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | Required if `AI_PROVIDER=openrouter` — key at [openrouter.ai/keys](https://openrouter.ai/keys), many models have a free `:free` tier |
 | `OLLAMA_HOST` / `OLLAMA_MODEL` | Used if `AI_PROVIDER=ollama` — local, no key, run `ollama pull <model>` first |
 | `OLLAMA_API_KEY` | Optional, only for a remote/auth-protected Ollama or Ollama Cloud |
+| `AGY_MODEL` | Optional, passed to `agy --model` if `AI_PROVIDER=agy` (default `Gemini 3.5 Flash (Medium)`) |
+| `AGY_BIN` | Optional path to the `agy` binary (useful under systemd) — install from [antigravity.google](https://antigravity.google) |
 | `DATA_DIR` | Optional, defaults to `./data` (local collection, media, state) |
 
 ## Run
