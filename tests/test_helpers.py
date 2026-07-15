@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 from anki_telegram import ai
 from anki_telegram.anki_store import (
+    DeckFormat,
     dodge_gtts_abbreviation_bug,
     escape_search,
     is_audio_field,
@@ -443,6 +444,21 @@ def test_telegram_edit_falls_back_to_send_and_returns_new_message_id():
     assert result == 123
 
 
+def test_telegram_edit_not_modified_is_a_no_op_not_a_new_message():
+    # Arrange: Telegram rejects an edit whose text+keyboard exactly match what's
+    # already there (e.g. a redundant re-draft) — this must be treated as a
+    # harmless no-op, not fall back to send() and duplicate the message.
+    tg = Telegram("token")
+    with patch.object(
+        tg, "call", side_effect=RuntimeError("telegram editMessageText failed: message is not modified")
+    ), patch.object(tg, "send") as mock_send:
+        # Act
+        result = tg.edit(42, 99, "hi", keyboard=None)
+    # Assert
+    mock_send.assert_not_called()
+    assert result == 99
+
+
 # -- bot._update_menu (anchor-message editing) ----------------------------------
 
 
@@ -494,6 +510,74 @@ def test_update_menu_rebinds_anchor_when_edit_falls_back_to_a_new_message():
     assert session.anchor_message_id == 9
     assert fake_self.message_sid == {5: 7, 9: 7}
     assert session.menu_message_ids == [5, 9]
+
+
+# -- bot.send_preview / remove_example (<br> example-sentence separator) ------
+
+
+def test_send_preview_renders_br_as_a_line_break_not_raw_tag():
+    # Arrange: drafted example sentences use a literal "<br>" tag (Anki fields
+    # are HTML) — the Telegram preview must show it as a line break, not
+    # HTML-escape it into visible "&lt;br&gt;"/"<br>" text.
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    session = Session(sid=7, deck_format=fmt, draft={"Front": "Hallo.<br>Wie geht's?", "Back": "Hi."})
+    fake_self = SimpleNamespace(_update_menu=MagicMock())
+    # Act
+    Bot.send_preview(fake_self, session)
+    # Assert
+    text = fake_self._update_menu.call_args[0][1]
+    assert "Hallo.\nWie geht's?" in text
+    assert "<br>" not in text
+    assert "&lt;br&gt;" not in text
+
+
+def test_send_preview_detects_existing_example_via_br_not_newline():
+    # Arrange: regression — has_example used to check for "\n", but drafts
+    # never contain a literal newline, only "<br>", so an existing example
+    # went undetected and "Add example" stayed offered instead of "Remove".
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    session = Session(sid=7, deck_format=fmt, draft={"Front": "Hallo.<br>Wie geht's?", "Back": "Hi.<br>Como estas."})
+    fake_self = SimpleNamespace(_update_menu=MagicMock())
+    # Act
+    Bot.send_preview(fake_self, session)
+    # Assert
+    keyboard = fake_self._update_menu.call_args[0][2]
+    button_texts = [b["text"] for row in keyboard for b in row]
+    assert "➖ Remove example sentence" in button_texts
+    assert "➕ Add example sentence" not in button_texts
+    assert session.example_cache == session.draft
+    assert session.example_cache_base == {"Front": "Hallo.", "Back": "Hi."}
+
+
+def test_send_preview_no_example_offers_add_button():
+    # Arrange: boundary — a draft with no "<br>" anywhere must not be
+    # mistaken for having an example.
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    session = Session(sid=7, deck_format=fmt, draft={"Front": "Hallo.", "Back": "Hi."})
+    fake_self = SimpleNamespace(_update_menu=MagicMock())
+    # Act
+    Bot.send_preview(fake_self, session)
+    # Assert
+    keyboard = fake_self._update_menu.call_args[0][2]
+    button_texts = [b["text"] for row in keyboard for b in row]
+    assert "➕ Add example sentence" in button_texts
+    assert session.example_cache is None
+
+
+def test_remove_example_strips_br_suffix_from_every_field():
+    # Arrange: regression — remove_example used to split on "\n", which never
+    # matches, so the example sentence never actually got removed.
+    session = Session(
+        sid=7,
+        deck_format=DeckFormat("Deutsch", "Basic", ["Front", "Back"], []),
+        draft={"Front": "Hallo.<br>Wie geht's?", "Back": "Hi.<br>Como estas."},
+    )
+    fake_self = SimpleNamespace(send_preview=MagicMock())
+    # Act
+    Bot.remove_example(fake_self, session)
+    # Assert
+    assert session.draft == {"Front": "Hallo.", "Back": "Hi."}
+    fake_self.send_preview.assert_called_once_with(session)
 
 
 # -- bot._friendly_ai_error ----------------------------------------------------

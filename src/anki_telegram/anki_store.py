@@ -159,7 +159,9 @@ class AnkiStore:
             if note.mid != mid:
                 continue
             examples.append(
-                {n: strip_html(v) for n, v in zip(field_names, note.fields)}
+                # ponytail: keep real tags (e.g. "<br>") so the AI mirrors the
+                # deck's actual formatting, only sound tags are noise here
+                {n: html.unescape(_SOUND_RE.sub("", v)).strip() for n, v in zip(field_names, note.fields)}
             )
             if len(examples) == 3:
                 break
