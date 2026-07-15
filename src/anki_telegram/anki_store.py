@@ -35,6 +35,21 @@ def dodge_gtts_abbreviation_bug(text: str) -> str:
     return re.sub(pattern, r"\1..", text, flags=re.IGNORECASE)
 
 
+_CASE_ABBR_RE = re.compile(r"\bAkk\.?\b|\bDat\.?\b")
+_CASE_ABBR_EXPANSION = {"Akk": "Akkusativ", "Dat": "Dativ"}
+
+
+def dodge_gtts_rection_shorthand(text: str) -> str:
+    """Verb-rection notes write case shorthand like "warten auf + Akk." —
+    gTTS reads that literally ("plus Akk Punkt") instead of speaking German.
+    Expand Akk./Dat. to full words, drop the now-redundant "+", and read
+    "/" between alternatives as "oder" so the phrase comes out speakable."""
+    text = _CASE_ABBR_RE.sub(lambda m: _CASE_ABBR_EXPANSION[m.group().rstrip(".")], text)
+    text = re.sub(r"\s*\+\s*", " ", text)
+    text = re.sub(r"\s*/\s*", " oder ", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
 def is_audio_field(name: str) -> bool:
     return "audio" in name.lower() or "sound" in name.lower()
 
@@ -221,8 +236,9 @@ class AnkiStore:
         """Generate German TTS, store in media, return [sound:...] tag."""
         from gtts import gTTS
 
+        speakable = dodge_gtts_abbreviation_bug(dodge_gtts_rection_shorthand(text))
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            gTTS(text=dodge_gtts_abbreviation_bug(text), lang="de").write_to_fp(tmp)
+            gTTS(text=speakable, lang="de").write_to_fp(tmp)
             tmp_path = tmp.name
         try:
             fname = self.col.media.add_file(tmp_path)

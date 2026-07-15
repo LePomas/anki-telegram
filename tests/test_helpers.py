@@ -12,6 +12,7 @@ from anki_telegram import ai
 from anki_telegram.anki_store import (
     DeckFormat,
     dodge_gtts_abbreviation_bug,
+    dodge_gtts_rection_shorthand,
     escape_search,
     is_audio_field,
     is_id_field,
@@ -65,6 +66,22 @@ def test_dodge_gtts_abbreviation_bug():
         assert abbreviations(dodged) == text
     # words that aren't gTTS abbreviations must pass through untouched
     assert dodge_gtts_abbreviation_bug("der Hund.") == "der Hund."
+
+
+def test_dodge_gtts_rection_shorthand():
+    # single case, trailing period
+    assert dodge_gtts_rection_shorthand("verzichten auf + Akk.") == "verzichten auf Akkusativ."
+    # two case alternatives joined by "/"
+    assert (
+        dodge_gtts_rection_shorthand("sich bewerben um + Akk. / bei + Dat.")
+        == "sich bewerben um Akkusativ. oder bei Dativ."
+    )
+    # bare case abbreviation, no preposition, no period
+    assert dodge_gtts_rection_shorthand("vertrauen + Dat") == "vertrauen Dativ"
+    # already-spelled-out case name must not be double-expanded
+    assert dodge_gtts_rection_shorthand("Verben mit Präposition + Dativ") == "Verben mit Präposition Dativ"
+    # no shorthand present must pass through untouched
+    assert dodge_gtts_rection_shorthand("der Hund") == "der Hund"
 
 
 def test_extract_json():
