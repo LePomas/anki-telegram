@@ -194,6 +194,8 @@ class Telegram:
             self.call("editMessageText", **params)
             return message_id
         except (RuntimeError, urllib.error.HTTPError) as exc:
+            if "message is not modified" in str(exc).lower():
+                return message_id
             log.warning("editMessageText failed (%s); sending instead", exc)
             return self.send(chat_id, text, keyboard)["message_id"]
 
@@ -797,13 +799,13 @@ class Bot:
             elif is_id_field(name) or not session.draft.get(name):
                 continue
             else:
-                lines.append(f"<i>{esc(name)}</i>: {esc(session.draft[name])}")
+                lines.append(f"<i>{esc(name)}</i>: {esc(session.draft[name].replace('<br>', chr(10)))}")
         main = main_field(fmt.field_names)
-        has_example = bool(main) and "\n" in session.draft.get(main, "")
+        has_example = bool(main) and "<br>" in session.draft.get(main, "")
         if has_example:
             session.example_cache = dict(session.draft)
             session.example_cache_base = {
-                n: v.split("\n", 1)[0] for n, v in session.draft.items()
+                n: v.split("<br>", 1)[0] for n, v in session.draft.items()
             }
         keyboard = [[opt_btn("⭐ Save card", "confirm", session.sid)]]
         if has_example:
@@ -850,7 +852,7 @@ class Bot:
             self.tg.send(self.cfg.chat_id, "Nothing to remove — send the word again.")
             return
         session.draft = {
-            n: v.split("\n", 1)[0] if "\n" in v else v for n, v in session.draft.items()
+            n: v.split("<br>", 1)[0] if "<br>" in v else v for n, v in session.draft.items()
         }
         self.send_preview(session)
 
