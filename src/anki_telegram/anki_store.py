@@ -24,6 +24,17 @@ def strip_html(value: str) -> str:
     return html.unescape(_SOUND_RE.sub("", _TAG_RE.sub(" ", value))).strip()
 
 
+def dodge_gtts_abbreviation_bug(text: str) -> str:
+    """gTTS silently drops the period after words ending in dr/jr/mr/mrs/ms/
+    msgr/prof/sr/st (e.g. "sonst." -> "sonst"), mistaking them for English
+    abbreviations like "Dr." or "St." regardless of lang= — this defeats the
+    TTS pause. Double the period so one survives gTTS's own stripping."""
+    from gtts.tokenizer.symbols import ABBREVIATIONS
+
+    pattern = r"(" + "|".join(re.escape(a) for a in ABBREVIATIONS) + r")\.(?!\.)"
+    return re.sub(pattern, r"\1..", text, flags=re.IGNORECASE)
+
+
 def is_audio_field(name: str) -> bool:
     return "audio" in name.lower() or "sound" in name.lower()
 
@@ -209,7 +220,7 @@ class AnkiStore:
         from gtts import gTTS
 
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            gTTS(text=text, lang="de").write_to_fp(tmp)
+            gTTS(text=dodge_gtts_abbreviation_bug(text), lang="de").write_to_fp(tmp)
             tmp_path = tmp.name
         try:
             fname = self.col.media.add_file(tmp_path)

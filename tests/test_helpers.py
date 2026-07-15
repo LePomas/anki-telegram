@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 from anki_telegram import ai
 from anki_telegram.anki_store import (
+    dodge_gtts_abbreviation_bug,
     escape_search,
     is_audio_field,
     is_id_field,
@@ -51,6 +52,18 @@ def test_escape_search():
 def test_strip_html():
     assert strip_html("<b>der Hund</b> [sound:x.mp3]") == "der Hund"
     assert strip_html("a&amp;b") == "a&b"
+
+
+def test_dodge_gtts_abbreviation_bug():
+    from gtts.tokenizer.pre_processors import abbreviations
+
+    # gTTS's own preprocessor mistakes these for "Dr."/"St." and eats the period —
+    # confirm our doubled period survives that stripping with exactly one left.
+    for text in ["sonst. Beeil dich.", "Herbst. Es wird kalt."]:
+        dodged = dodge_gtts_abbreviation_bug(text)
+        assert abbreviations(dodged) == text
+    # words that aren't gTTS abbreviations must pass through untouched
+    assert dodge_gtts_abbreviation_bug("der Hund.") == "der Hund."
 
 
 def test_extract_json():
