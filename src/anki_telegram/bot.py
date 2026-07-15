@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import ai
-from .anki_store import AnkiStore, DeckFormat, is_audio_field, is_id_field, main_field
+from .anki_store import AnkiStore, DeckFormat, is_audio_field, is_id_field, main_field, strip_html
 
 log = logging.getLogger("anki_telegram")
 
@@ -912,7 +912,7 @@ class Bot:
             if main and fields.get(main):
                 try:
                     # ponytail: TTS covers the main field only; extend to sentence audio if wanted
-                    sound = self.store.add_audio(fields[main])
+                    sound = self.store.add_audio(strip_html(fields[main]))
                     if audio_fields:
                         fields[audio_fields[0]] = sound
                     else:
