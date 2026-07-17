@@ -1,5 +1,9 @@
 # anki-telegram
 
+[![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue)](https://www.python.org/)
+[![uv](https://img.shields.io/badge/managed%20by-uv-DE5FE9)](https://docs.astral.sh/uv/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 <img src="assets/cover.png" alt="Ankibot conversation in Telegram" align="right" width="220">
 
 Telegram bot for German vocabulary. Send it a word; it checks your Anki
@@ -41,7 +45,7 @@ The whole thing — choice, deck pick if needed, preview, add/remove example —
 plays out by editing a single message in place, so a chat with several words
 in flight doesn't fill up with old button messages.
 
-<video src="assets/demo.webm" controls width="240"></video>
+<img src="assets/demo.gif" alt="Demo: sending a word to the saved card synced back to AnkiWeb" width="240">
 
 _End to end: sending a word to the saved card synced back to AnkiWeb._
 
