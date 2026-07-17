@@ -87,19 +87,11 @@ claude   # log in once with your Claude account, then exit
 (On a machine where you can't log in interactively, run `claude setup-token`
 elsewhere and put the token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.)
 
-Only needed if you're using a different `AI_PROVIDER`:
-
-```sh
-# agy (AI_PROVIDER=agy) — install per https://antigravity.google, then:
-agy   # log in once with your Google account, then exit
-
-# ollama (AI_PROVIDER=ollama) — install per https://ollama.com, then:
-ollama pull llama3.1   # or whichever OLLAMA_MODEL you set
-```
-
-`gemini`/`openrouter` need no local install, just an API key (see the table
-below). Under systemd, set `CLAUDE_BIN`/`AGY_BIN` to an absolute path —
-services often don't inherit your interactive shell's `PATH`.
+Using a different `AI_PROVIDER`? `gemini`/`openrouter` just need an API key
+(see the table below); `agy`/`ollama` need their own CLI installed — see
+[antigravity.google](https://antigravity.google) / [ollama.com](https://ollama.com)
+for that vendor's install steps. Under systemd, set `CLAUDE_BIN`/`AGY_BIN` to
+an absolute path — services often don't inherit your interactive shell's `PATH`.
 
 ```sh
 uv sync
