@@ -695,6 +695,7 @@ def test_create_card_surfaces_full_sync_conflict_without_losing_session():
         cfg=SimpleNamespace(chat_id=123),
         store=MagicMock(),
         sessions={7: session},
+        _show_status=MagicMock(),
     )
     fake_self.store.sync.side_effect = RuntimeError(
         "AnkiWeb requires a full sync; resolve it in Anki desktop first"
@@ -703,7 +704,7 @@ def test_create_card_surfaces_full_sync_conflict_without_losing_session():
     Bot.create_card(fake_self, session, message_id=99)
     # Assert
     fake_self.store.add_note.assert_called_once()
-    fake_self.tg.edit.assert_called_with(
+    fake_self.tg.edit.assert_called_once_with(
         123, 99, "⚠️ Failed: AnkiWeb requires a full sync; resolve it in Anki desktop first"
     )
     assert 7 in fake_self.sessions

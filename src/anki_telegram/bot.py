@@ -362,6 +362,7 @@ class Session:
     langs: list[str] = field(default_factory=list)  # reused by both source/target lang pickers
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
     anchor_message_id: int | None = None  # the one message this word's flow edits in place
+    anchor_text: str = ""  # last real (non-status) text the anchor was set to
 
 
 class Bot:
@@ -418,6 +419,7 @@ class Bot:
         preview all reuse it) instead of spawning a new message each step —
         keeps a busy chat with several words in flight from filling up with
         stale button messages. Sends fresh only the first time."""
+        session.anchor_text = text
         if session.anchor_message_id is not None:
             new_id = self.tg.edit(self.cfg.chat_id, session.anchor_message_id, text, keyboard)
             if new_id != session.anchor_message_id:
@@ -431,6 +433,15 @@ class Bot:
         session.anchor_message_id = msg["message_id"]
         if keyboard:
             session.menu_message_ids.append(msg["message_id"])
+
+    def _show_status(self, session: Session, status: str, message_id: int | None = None) -> None:
+        """Append a transient status line below the anchor's current text
+        instead of replacing it outright — replacing made the message
+        visibly shrink to the status line then grow back once the real
+        result landed. Doesn't touch `anchor_text`, so the next real
+        `_update_menu` call still overwrites this, not appends to it."""
+        text = f"{session.anchor_text}\n\n{status}" if session.anchor_text else status
+        self.tg.edit(self.cfg.chat_id, message_id or session.anchor_message_id, text, [])
 
     def effective_read_deck(self) -> str:
         return self.state.data.get("read_deck", self.cfg.read_deck)
@@ -530,7 +541,7 @@ class Bot:
     # -- flow: incoming word --------------------------------------------------
 
     def on_new_word(self, text: str) -> None:
-        thinking_id = self.tg.send(self.cfg.chat_id, "🤔 Thinking…")["message_id"]
+        thinking_id = self.tg.send(self.cfg.chat_id, "⏳ Thinking…")["message_id"]
         with keep_typing(self.tg, self.cfg.chat_id):
             try:
                 self.store.sync(allow_full_download=True)
@@ -871,7 +882,7 @@ class Bot:
                 f"Deck <b>{esc(deck)}</b> is empty — no format to mirror. Pick another with /deck.",
             )
             return
-        self._update_menu(session, "🤔 Drafting card…", [])
+        self._show_status(session, "✏️ Drafting card…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.draft_fields(
@@ -937,7 +948,7 @@ class Bot:
             session.draft = dict(session.example_cache)
             self.send_preview(session)
             return
-        self._update_menu(session, "🤔 Adding example…", [])
+        self._show_status(session, "💬 Adding example…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.add_example(
@@ -1019,9 +1030,9 @@ class Bot:
         fields = {n: session.draft.get(n, "") for n in fmt.field_names}
         main = main_field(fmt.field_names)
         audio_fields = [n for n in fmt.field_names if is_audio_field(n)]
-        self.tg.edit(self.cfg.chat_id, message_id, "🤔 Saving…", [])
         with keep_typing(self.tg, self.cfg.chat_id):
             if main and fields.get(main):
+                self._show_status(session, "🔊 Generating audio…", message_id)
                 try:
                     # ponytail: TTS covers the main field only; extend to sentence audio if wanted
                     sound = self.store.add_audio(strip_html(fields[main]), self.cfg.lang_source)
@@ -1034,6 +1045,7 @@ class Bot:
                         fields[main] = f"{fields[main]} {sound}"
                 except Exception as exc:
                     log.warning("TTS failed, saving without audio: %s", exc)
+            self._show_status(session, "💾 Saving…", message_id)
             try:
                 self.store.add_note(fmt.deck, fmt.notetype, fields)
                 self.store.sync(allow_full_download=False)
