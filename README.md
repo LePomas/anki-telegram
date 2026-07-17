@@ -23,7 +23,7 @@ you're getting rate-limited).
 
 ## Flow
 
-```
+```text
 you: läuft
 bot: laufen
      ✅ laufen — Languages::Deutsch::Goethe A1
@@ -86,7 +86,7 @@ cp .env.example .env   # then fill in the values
 `.env` values:
 
 | Variable | Purpose |
-|---|---|
+| --- | --- |
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Your numeric user ID (from [@userinfobot](https://t.me/userinfobot)); all other chats are ignored |
 | `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` | AnkiWeb account for sync |
