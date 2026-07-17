@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot that turns German vocabulary messages into deduplicated Anki cards. It runs headlessly against a real Anki collection (via the official `anki` Python library, no Anki desktop/AnkiConnect) and syncs that collection with AnkiWeb. Card content is drafted by AI through the **Claude Code CLI in headless mode** (`claude -p`), not the Anthropic API — auth comes from the user's existing Claude subscription (or `CLAUDE_CODE_OAUTH_TOKEN`), so no API key handling exists in this codebase.
+A Telegram bot that turns vocabulary messages into deduplicated Anki cards. Source/target language is a runtime setting (`LANG_SOURCE`/`LANG_TARGET`, changeable via `/settings`; default German→Spanish) rather than hardcoded. It runs headlessly against a real Anki collection (via the official `anki` Python library, no Anki desktop/AnkiConnect) and syncs that collection with AnkiWeb. Card content is drafted by AI, defaulting to the **Claude Code CLI in headless mode** (`claude -p`), not the Anthropic API — auth comes from the user's existing Claude subscription (or `CLAUDE_CODE_OAUTH_TOKEN`), so no API key handling exists for that path. `AI_PROVIDER` can route through Gemini/OpenRouter/Ollama/Antigravity instead.
 
 ## Commands
 
@@ -25,11 +25,11 @@ Three modules, each with one job:
 
 - **`bot.py`** — Telegram long-polling loop (`Bot.run`), a hand-rolled `Telegram` API client over `urllib` (no library), and the conversation state machine.
 - **`anki_store.py`** — `AnkiStore` wraps a headless `anki.collection.Collection`: AnkiWeb sync, deck/notetype introspection, note search, note creation, TTS audio generation (`gTTS`).
-- **`ai.py`** — shells out to `claude -p --output-format json` for two tasks: `analyze_word` (canonicalize + generate search terms for a submitted word) and `draft_fields` (write new note field values by mirroring example notes from the target deck). `call_claude` retries once on non-zero exit.
+- **`ai.py`** — `call_ai` dispatches to whichever `AI_PROVIDER` is configured (`claude -p --output-format json` by default, or an HTTP call for gemini/openrouter/ollama/agy) for three tasks: `analyze_word` (canonicalize + generate search terms), `draft_fields` (write new note field values mirroring example notes from the target deck), and `add_example` (add an example sentence to an existing draft). Each task's system prompt is built by a `_*_system(source_name, target_name)` function that interpolates the configured language pair; German/Spanish-specific grammar notes (der/die/das article rule, Latin American Mexican Spanish dialect hint) are gated behind small lookup dicts (`_ARTICLE_HINTS`, `_GRAMMAR_NOTES`, `_DIALECT_HINTS`) keyed by language name, not forced onto every pair.
 
 ### Conversation flow (`bot.py`)
 
-`Bot` holds one in-memory `Session` (phase: `idle` → `awaiting_choice` → one of `awaiting_deck` / `awaiting_confirm` / `awaiting_fields`). Session state is **not** persisted — a restart mid-conversation just means the user resends the word. The only state that *is* persisted (`StateStore`, `data/state.json`) is the Telegram update offset and the chosen target deck.
+`Bot` holds one in-memory `Session` (phase: `idle` → `awaiting_choice` → one of `awaiting_deck` / `awaiting_confirm` / `awaiting_fields`). Session state is **not** persisted — a restart mid-conversation just means the user resends the word. The state that *is* persisted (`StateStore`, `data/state.json`) is the Telegram update offset, the chosen target deck, the AI provider/model, and the source/target language pair — all applied as overrides on top of env-var defaults in `Bot.__init__`.
 
 Callback buttons encode intent as `callback_data` prefixes dispatched in `Bot.on_callback`: `opt:<action>` (skip/create/manual/edit/confirm/cancel) and `deck:<index>` (index into the last-sent deck list — stale if decks changed since, hence the bounds check).
 

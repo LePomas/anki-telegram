@@ -50,6 +50,16 @@ def dodge_gtts_rection_shorthand(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+def _prepare_speakable(text: str, lang: str) -> str:
+    """Apply TTS-safety dodges before handing text to gTTS. The rection-
+    shorthand expansion is German-grammar-specific, so it only runs for a
+    German source; the abbreviation-bug dodge fires "regardless of lang="
+    per its own docstring, so it always runs."""
+    if lang == "de":
+        text = dodge_gtts_rection_shorthand(text)
+    return dodge_gtts_abbreviation_bug(text)
+
+
 def is_audio_field(name: str) -> bool:
     return "audio" in name.lower() or "sound" in name.lower()
 
@@ -232,13 +242,14 @@ class AnkiStore:
         self.col.add_note(note, did)
         return note.id
 
-    def add_audio(self, text: str) -> str:
-        """Generate German TTS, store in media, return [sound:...] tag."""
+    def add_audio(self, text: str, lang: str) -> str:
+        """Generate TTS in `lang` (a gTTS language code, e.g. "de"), store in
+        media, return [sound:...] tag."""
         from gtts import gTTS
 
-        speakable = dodge_gtts_abbreviation_bug(dodge_gtts_rection_shorthand(text))
+        speakable = _prepare_speakable(text, lang)
         with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            gTTS(text=speakable, lang="de").write_to_fp(tmp)
+            gTTS(text=speakable, lang=lang).write_to_fp(tmp)
             tmp_path = tmp.name
         try:
             fname = self.col.media.add_file(tmp_path)

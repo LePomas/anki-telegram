@@ -5,12 +5,14 @@ so no real CLI or network call ever happens)."""
 import io
 import os
 import urllib.error
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 from anki_telegram import ai
 from anki_telegram.anki_store import (
     DeckFormat,
+    _prepare_speakable,
     dodge_gtts_abbreviation_bug,
     dodge_gtts_rection_shorthand,
     escape_search,
@@ -21,10 +23,13 @@ from anki_telegram.anki_store import (
 )
 from anki_telegram.bot import (
     Bot,
+    Config,
     Session,
     Telegram,
     _ai_config_from_env,
     _friendly_ai_error,
+    available_langs,
+    lang_name,
     parse_callback_data,
 )
 
@@ -84,6 +89,13 @@ def test_dodge_gtts_rection_shorthand():
     assert dodge_gtts_rection_shorthand("der Hund") == "der Hund"
 
 
+def test_prepare_speakable_expands_rection_shorthand_only_for_german():
+    # German-grammar-specific dodge must apply for a German source...
+    assert _prepare_speakable("warten auf + Akk.", "de") == "warten auf Akkusativ."
+    # ...but not be forced onto a different source language's vocabulary.
+    assert _prepare_speakable("warten auf + Akk.", "fr") == "warten auf + Akk."
+
+
 def test_extract_json():
     assert ai.extract_json('noise {"a": 1} noise') == {"a": 1}
     assert ai.extract_json('```json\n{"a": {"b": 2}}\n```') == {"a": {"b": 2}}
@@ -106,6 +118,36 @@ def test_parse_callback_data():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_parse_callback_data_lang_picks():
+    assert parse_callback_data("slang:3:12") == ("source_lang_pick", 3, 12)
+    assert parse_callback_data("tlang:3:40") == ("target_lang_pick", 3, 40)
+
+
+# -- ai system-prompt templating (source/target language) ---------------------
+
+
+def test_analyze_system_article_hint_only_for_german_source():
+    assert "der/die/das Wort" in ai._analyze_system("German")
+    assert "der/die/das Wort" not in ai._analyze_system("French")
+
+
+def test_draft_system_omits_german_grammar_note_for_non_german_source():
+    text = ai._draft_system("French", "Italian")
+    assert "German nouns get their article" not in text
+    assert "a French field holds ONLY French" in text
+
+
+def test_draft_system_includes_spanish_dialect_hint_only_for_spanish_target():
+    assert "Latin American Mexican Spanish" in ai._draft_system("German", "Spanish")
+    assert "Latin American Mexican Spanish" not in ai._draft_system("German", "French")
+
+
+def test_add_example_system_uses_source_name_throughout():
+    text = ai._add_example_system("French")
+    assert "French learner deck" in text
+    assert "German" not in text
 
 
 # -- ai.call_ai dispatch ------------------------------------------------------
@@ -649,6 +691,69 @@ def test_ai_config_from_env_gemini_fallback_defaults_and_overrides():
     # Assert
     assert default_cfg.fallback_model == "gemini-flash-lite-latest"
     assert override_cfg.fallback_model == "gemini-2.0-flash"
+
+
+# -- bot language settings -----------------------------------------------------
+
+
+def test_available_langs_includes_expected_defaults():
+    langs = available_langs()
+    assert langs["de"] == "German"
+    assert langs["es"] == "Spanish"
+
+
+def test_lang_name_known_and_unknown_code():
+    assert lang_name("de") == "German"
+    assert lang_name("xx-bogus") == "xx-bogus"
+
+
+def _make_cfg(**overrides) -> Config:
+    defaults = dict(
+        telegram_token="t",
+        chat_id=1,
+        ankiweb_username="u",
+        ankiweb_password="p",
+        ai=ai.AIConfig(provider="claude", model="haiku"),
+        data_dir=Path("unused"),
+        read_deck="",
+        write_deck="",
+        lang_source="de",
+        lang_target="es",
+    )
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+def test_bot_init_applies_saved_lang_overrides_when_valid():
+    # Arrange: mirrors the saved_provider/saved_model startup-override pattern
+    fake_state = SimpleNamespace(data={"lang_source": "fr", "lang_target": "it"}, save=MagicMock())
+    with patch("anki_telegram.bot.AnkiStore"), patch(
+        "anki_telegram.bot.StateStore", return_value=fake_state
+    ):
+        # Act
+        bot = Bot(_make_cfg())
+    # Assert
+    assert bot.cfg.lang_source == "fr"
+    assert bot.cfg.lang_target == "it"
+
+
+def test_bot_init_ignores_saved_lang_override_when_invalid():
+    # Arrange: boundary — a bogus/stale code left over in state.json must not
+    # override the (always-valid) env default.
+    fake_state = SimpleNamespace(data={"lang_source": "bogus-code"}, save=MagicMock())
+    with patch("anki_telegram.bot.AnkiStore"), patch(
+        "anki_telegram.bot.StateStore", return_value=fake_state
+    ):
+        # Act
+        bot = Bot(_make_cfg())
+    # Assert
+    assert bot.cfg.lang_source == "de"
+
+
+def test_help_text_mentions_configured_source_language():
+    fake_self = SimpleNamespace(cfg=SimpleNamespace(lang_source="fr"))
+    text = Bot.help_text(fake_self)
+    assert "Send me a French word or phrase." in text
 
 
 if __name__ == "__main__":

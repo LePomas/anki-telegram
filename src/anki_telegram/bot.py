@@ -1,4 +1,4 @@
-"""Telegram bot: German vocab in, deduplicated Anki cards out."""
+"""Telegram bot: vocab in (source/target language configurable), deduplicated Anki cards out."""
 
 from __future__ import annotations
 
@@ -117,6 +117,28 @@ def available_providers() -> list[str]:
     ]
 
 
+def available_langs() -> dict[str, str]:
+    """{code: English name} for every language gTTS can speak — the single
+    source of truth for valid LANG_SOURCE/LANG_TARGET codes and for the
+    /settings language pickers."""
+    from gtts.lang import tts_langs
+
+    return tts_langs()
+
+
+def lang_name(code: str) -> str:
+    """English display name for a gTTS language code, e.g. 'de' -> 'German'.
+    Falls back to the code itself if unrecognized."""
+    return available_langs().get(code, code)
+
+
+def _validate_lang(code: str, var_name: str) -> str | None:
+    """None if usable, else a user-facing reason it isn't."""
+    if code not in available_langs():
+        return f"{var_name}={code!r} isn't a gTTS-supported language code"
+    return None
+
+
 @dataclass
 class Config:
     telegram_token: str
@@ -127,6 +149,8 @@ class Config:
     data_dir: Path
     read_deck: str
     write_deck: str
+    lang_source: str
+    lang_target: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -139,6 +163,8 @@ class Config:
             data_dir=Path(os.environ.get("DATA_DIR", "data")),
             read_deck=os.environ.get("ANKI_READ_DECK", "").strip(),
             write_deck=os.environ.get("ANKI_WRITE_DECK", "").strip(),
+            lang_source=os.environ.get("LANG_SOURCE", "de").strip(),
+            lang_target=os.environ.get("LANG_TARGET", "es").strip(),
         )
 
 
@@ -266,6 +292,12 @@ def parse_callback_data(data: str) -> tuple[str, int, int | None]:
     if data.startswith("model:"):
         _, sid_str, idx_str = data.split(":", 2)
         return "model_pick", int(sid_str), int(idx_str)
+    if data.startswith("slang:"):
+        _, sid_str, idx_str = data.split(":", 2)
+        return "source_lang_pick", int(sid_str), int(idx_str)
+    if data.startswith("tlang:"):
+        _, sid_str, idx_str = data.split(":", 2)
+        return "target_lang_pick", int(sid_str), int(idx_str)
     raise ValueError(f"unrecognized callback data: {data}")
 
 
@@ -305,22 +337,6 @@ class StateStore:
 
 # -- bot ------------------------------------------------------------------------
 
-HELP = (
-    "Send me a German word or phrase.\n"
-    "I check your Anki collection for it (including other forms and example "
-    "sentences), then offer options: create a card in your target deck, write "
-    "one yourself, or skip.\n\n"
-    "You can send several words before answering any of them — each gets its "
-    "own thread. When asked to write fields yourself, reply directly to that "
-    "prompt (tap it, then Reply) so I know which word it's for.\n\n"
-    "Commands:\n"
-    "/settings — configure target deck, search scope, and AI provider\n"
-    "/deck — choose the target deck (shortcut into /settings)\n"
-    "/cancel — reply to a word's message to abandon just that one, or send "
-    "bare to abandon everything in flight\n"
-    "/help — this message"
-)
-
 
 @dataclass
 class Session:
@@ -339,6 +355,7 @@ class Session:
     deck_pick_reason: str = ""  # "create" (continue to draft), "set" or "read_deck" (just save)
     providers: list[str] = field(default_factory=list)
     models: list[str] = field(default_factory=list)
+    langs: list[str] = field(default_factory=list)  # reused by both source/target lang pickers
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
     anchor_message_id: int | None = None  # the one message this word's flow edits in place
 
@@ -364,6 +381,12 @@ class Bot:
         saved_model = self.state.data.get("ai_model")
         if saved_model and saved_model in _MODELS_BY_PROVIDER.get(self.cfg.ai.provider, ()):
             self.cfg.ai = replace(self.cfg.ai, model=saved_model)
+        saved_lang_source = self.state.data.get("lang_source")
+        if saved_lang_source and saved_lang_source in available_langs():
+            self.cfg.lang_source = saved_lang_source
+        saved_lang_target = self.state.data.get("lang_target")
+        if saved_lang_target and saved_lang_target in available_langs():
+            self.cfg.lang_target = saved_lang_target
         self.sessions: dict[int, Session] = {}
         # telegram message_id -> sid, for every message that expects a reply
         # (buttons or free text) — lets /cancel and manual-field replies find
@@ -440,7 +463,7 @@ class Bot:
     def on_text(self, text: str, reply_to: int | None = None) -> None:
         cmd = text.split("@")[0].lower() if text.startswith("/") else ""
         if cmd in ("/start", "/help"):
-            self.tg.send(self.cfg.chat_id, HELP)
+            self.tg.send(self.cfg.chat_id, self.help_text())
             return
         if cmd == "/cancel":
             self.on_cancel(reply_to)
@@ -511,7 +534,9 @@ class Bot:
                 self.tg.send(self.cfg.chat_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
                 return
             try:
-                analysis = ai.analyze_word(self.cfg.ai, text, cwd=self.cfg.data_dir)
+                analysis = ai.analyze_word(
+                    self.cfg.ai, text, lang_name(self.cfg.lang_source), cwd=self.cfg.data_dir
+                )
             except Exception as exc:
                 log.exception("analyze failed")
                 self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(_friendly_ai_error(exc))}")
@@ -574,10 +599,20 @@ class Bot:
         elif action == "model_pick":
             assert index is not None
             self.on_model_picked(session, index)
+        elif action == "source_lang_pick":
+            assert index is not None
+            self.on_source_lang_picked(session, index)
+        elif action == "target_lang_pick":
+            assert index is not None
+            self.on_target_lang_picked(session, index)
         elif action == "menu_deck":
             self.prompt_deck(session, reason="set")
         elif action == "menu_read_deck":
             self.prompt_read_deck(session)
+        elif action == "menu_source_lang":
+            self.prompt_source_lang(session)
+        elif action == "menu_target_lang":
+            self.prompt_target_lang(session)
         elif action == "menu_provider":
             self.prompt_provider(session)
         elif action == "menu_model":
@@ -738,6 +773,62 @@ class Bot:
             [],
         )
 
+    def prompt_source_lang(self, session: Session) -> None:
+        langs = available_langs()
+        codes = sorted(langs, key=lambda c: (langs[c], c))
+        session.langs = codes
+        current = self.cfg.lang_source
+        keyboard = [
+            [btn(("✅ " if c == current else "") + langs[c], f"slang:{session.sid}:{i}")]
+            for i, c in enumerate(codes)
+        ]
+        self._update_menu(session, "Pick source language (the language you send words in):", keyboard)
+
+    def on_source_lang_picked(self, session: Session, index: int) -> None:
+        codes = session.langs
+        if not 0 <= index < len(codes):
+            self.tg.send(self.cfg.chat_id, "Stale language list — try again.")
+            return
+        code = codes[index]
+        self.cfg.lang_source = code
+        self.state.data["lang_source"] = code
+        self.state.save()
+        self.sessions.pop(session.sid, None)
+        self.tg.edit(
+            self.cfg.chat_id,
+            session.anchor_message_id,
+            f"Source language: <b>{esc(lang_name(code))}</b>",
+            [],
+        )
+
+    def prompt_target_lang(self, session: Session) -> None:
+        langs = available_langs()
+        codes = sorted(langs, key=lambda c: (langs[c], c))
+        session.langs = codes
+        current = self.cfg.lang_target
+        keyboard = [
+            [btn(("✅ " if c == current else "") + langs[c], f"tlang:{session.sid}:{i}")]
+            for i, c in enumerate(codes)
+        ]
+        self._update_menu(session, "Pick target language (what cards get translated into):", keyboard)
+
+    def on_target_lang_picked(self, session: Session, index: int) -> None:
+        codes = session.langs
+        if not 0 <= index < len(codes):
+            self.tg.send(self.cfg.chat_id, "Stale language list — try again.")
+            return
+        code = codes[index]
+        self.cfg.lang_target = code
+        self.state.data["lang_target"] = code
+        self.state.save()
+        self.sessions.pop(session.sid, None)
+        self.tg.edit(
+            self.cfg.chat_id,
+            session.anchor_message_id,
+            f"Target language: <b>{esc(lang_name(code))}</b>",
+            [],
+        )
+
     def open_settings(self) -> None:
         session = self._new_session()
         deck = self.state.data.get("deck") or "(not set)"
@@ -746,11 +837,15 @@ class Bot:
             "<b>Settings</b>",
             f"Target deck: {esc(deck)}",
             f"Search scope: {esc(read_deck)}",
+            f"Source language: {esc(lang_name(self.cfg.lang_source))}",
+            f"Target language: {esc(lang_name(self.cfg.lang_target))}",
             f"AI provider: {esc(f'{self.cfg.ai.provider}/{self.cfg.ai.model}')}",
         ]
         keyboard = [
             [opt_btn("Change target deck", "menu_deck", session.sid)],
             [opt_btn("Change search scope", "menu_read_deck", session.sid)],
+            [opt_btn("Change source language", "menu_source_lang", session.sid)],
+            [opt_btn("Change target language", "menu_target_lang", session.sid)],
             [opt_btn("Change AI provider", "menu_provider", session.sid)],
             [opt_btn("Change AI model", "menu_model", session.sid)],
             [opt_btn("Close", "menu_close", session.sid)],
@@ -775,6 +870,8 @@ class Bot:
                     fmt.field_names,
                     fmt.examples,
                     deck,
+                    lang_name(self.cfg.lang_source),
+                    lang_name(self.cfg.lang_target),
                     cwd=self.cfg.data_dir,
                 )
         except Exception as exc:
@@ -838,6 +935,7 @@ class Bot:
                     fmt.examples,
                     session.draft,
                     fmt.deck,
+                    lang_name(self.cfg.lang_source),
                     cwd=self.cfg.data_dir,
                 )
         except Exception as exc:
@@ -914,7 +1012,7 @@ class Bot:
             if main and fields.get(main):
                 try:
                     # ponytail: TTS covers the main field only; extend to sentence audio if wanted
-                    sound = self.store.add_audio(strip_html(fields[main]))
+                    sound = self.store.add_audio(strip_html(fields[main]), self.cfg.lang_source)
                     if audio_fields:
                         fields[audio_fields[0]] = sound
                     else:
@@ -940,12 +1038,31 @@ class Bot:
         )
         self._collapse_menus(session)
 
+    def help_text(self) -> str:
+        source = lang_name(self.cfg.lang_source)
+        return (
+            f"Send me a {source} word or phrase.\n"
+            "I check your Anki collection for it (including other forms and example "
+            "sentences), then offer options: create a card in your target deck, write "
+            "one yourself, or skip.\n\n"
+            "You can send several words before answering any of them — each gets its "
+            "own thread. When asked to write fields yourself, reply directly to that "
+            "prompt (tap it, then Reply) so I know which word it's for.\n\n"
+            "Commands:\n"
+            "/settings — configure target deck, search scope, source/target "
+            "language, and AI provider\n"
+            "/deck — choose the target deck (shortcut into /settings)\n"
+            "/cancel — reply to a word's message to abandon just that one, or send "
+            "bare to abandon everything in flight\n"
+            "/help — this message"
+        )
+
     def _register_commands(self) -> None:
         try:
             self.tg.call(
                 "setMyCommands",
                 commands=[
-                    {"command": "settings", "description": "target deck, search scope, AI provider"},
+                    {"command": "settings", "description": "target deck, search scope, language, AI provider"},
                     {"command": "deck", "description": "choose the target deck"},
                     {"command": "cancel", "description": "abandon a word (reply) or everything in flight"},
                     {"command": "help", "description": "show usage"},
@@ -1004,6 +1121,10 @@ def main() -> None:
     err = _validate_provider(cfg.ai)
     if err:
         raise SystemExit(err)
+    for var_name, code in (("LANG_SOURCE", cfg.lang_source), ("LANG_TARGET", cfg.lang_target)):
+        lang_err = _validate_lang(code, var_name)
+        if lang_err:
+            raise SystemExit(lang_err)
     Bot(cfg).run(once=args.once)
 
 

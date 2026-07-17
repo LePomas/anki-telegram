@@ -1,7 +1,7 @@
 [project]
 name = "anki-telegram"
 version = "0.1.0"
-description = "Telegram bot that turns German vocab messages into deduplicated Anki cards, synced with AnkiWeb"
+description = "Telegram bot that turns vocabulary messages into deduplicated Anki cards, synced with AnkiWeb"
 readme = "README.md"
 license = "MIT"
 authors = [

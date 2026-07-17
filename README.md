@@ -6,12 +6,14 @@
 
 <img src="assets/cover.png" alt="Ankibot conversation in Telegram" align="right" width="220">
 
-Telegram bot for German vocabulary. Send it a word; it checks your Anki
-collection (via AnkiWeb sync) for existing cards — including other
-forms/tenses and appearances inside other cards' example sentences — then
-offers options: create a card that mirrors your target deck's format, write
-the fields yourself, or skip. Cards get German TTS audio and are synced back
-to AnkiWeb immediately.
+Telegram bot for vocabulary flashcards. Source and target language are
+configurable via `/settings` (default German→Spanish; any `gTTS`-supported
+language works). Send it a word; it checks your Anki collection (via AnkiWeb
+sync) for existing cards — including other forms/tenses and appearances
+inside other cards' example sentences — then offers options: create a card
+that mirrors your target deck's format, write the fields yourself, or skip.
+Cards get TTS audio in the source language and are synced back to AnkiWeb
+immediately.
 
 Fully standalone: no Anki desktop, no AnkiConnect. Uses the official `anki`
 Python library headlessly, plain `urllib` for Telegram and for AI HTTP
@@ -26,6 +28,9 @@ quota than Claude/Gemini's own free/pro tiers, so it's worth switching to if
 you're getting rate-limited).
 
 ## Flow
+
+The example below uses the default German→Spanish pair — pick a different one
+with `/settings` → "Change source language" / "Change target language".
 
 ```text
 you: läuft
@@ -104,7 +109,11 @@ cp .env.example .env   # then fill in the values
 | `OLLAMA_API_KEY` | Optional, only for a remote/auth-protected Ollama or Ollama Cloud |
 | `AGY_MODEL` | Optional, passed to `agy --model` if `AI_PROVIDER=agy` (default `Gemini 3.5 Flash (Medium)`) |
 | `AGY_BIN` | Optional path to the `agy` binary (useful under systemd) — install from [antigravity.google](https://antigravity.google) |
+| `LANG_SOURCE` | Optional, defaults to `de` — the language you send words in (any `gTTS`-supported code, changeable via `/settings`) |
+| `LANG_TARGET` | Optional, defaults to `es` — the language cards get translated into (changeable via `/settings`) |
 | `DATA_DIR` | Optional, defaults to `./data` (local collection, media, state) |
+| `ANKI_READ_DECK` | Optional, restricts the "already exists?" search to this deck (default: whole collection) |
+| `ANKI_WRITE_DECK` | Optional, default target deck for new cards (still changeable via `/deck`) |
 
 ## Run
 
@@ -123,7 +132,10 @@ thread. When asked to write fields yourself, reply directly to that prompt
 
 ## Commands
 
-- `/deck` — pick the target deck for new cards (remembered across restarts)
+- `/settings` — configure target deck, search scope, source/target language,
+  and AI provider
+- `/deck` — pick the target deck for new cards (shortcut into `/settings`,
+  remembered across restarts)
 - `/cancel` — reply to a word's message to abandon just that one, or send
   bare to abandon everything in flight
 - `/help` — usage

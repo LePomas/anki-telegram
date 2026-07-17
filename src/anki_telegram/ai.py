@@ -224,20 +224,33 @@ def extract_json(text: str) -> dict:
     return obj
 
 
-ANALYZE_SYSTEM = """\
-You are a German vocabulary assistant for an Anki flashcard workflow.
-The user submits a German word or short phrase, possibly inflected or misspelled.
+# Grammar/dialect notes that only make sense for specific languages, keyed by
+# the English display name gtts.lang.tts_langs() uses (e.g. "German").
+# Empty/absent for a language means no special-cased hint is injected.
+_ARTICLE_HINTS = {"German": "nouns as 'der/die/das Wort'"}
+_GRAMMAR_NOTES = {
+    "German": "German nouns get their article (der/die/das); verbs are given as infinitive.",
+}
+_DIALECT_HINTS = {"Spanish": "use Latin American Mexican Spanish — never peninsular Spanish"}
+
+
+def _analyze_system(source_name: str) -> str:
+    clauses = [_ARTICLE_HINTS.get(source_name), "verbs as infinitive", "keep phrases as-is"]
+    display_spec = "canonical dictionary form (" + ", ".join(c for c in clauses if c) + ")"
+    return f"""\
+You are a {source_name} vocabulary assistant for an Anki flashcard workflow.
+The user submits a {source_name} word or short phrase, possibly inflected or misspelled.
 Reply with ONLY a JSON object:
-{
-  "display": "canonical dictionary form (nouns as 'der/die/das Wort', verbs as infinitive, keep phrases as-is)",
+{{
+  "display": "{display_spec}",
   "lemma": "bare lemma without article",
   "pos": "noun|verb|adjective|adverb|phrase|other",
   "search_terms": ["lemma plus up to 6 common inflected/conjugated forms, including the user's original spelling"]
-}"""
+}}"""
 
 
-def analyze_word(cfg: AIConfig, text: str, cwd: Path | None = None) -> dict:
-    raw = call_ai(cfg, ANALYZE_SYSTEM, text, cwd)
+def analyze_word(cfg: AIConfig, text: str, source_name: str, cwd: Path | None = None) -> dict:
+    raw = call_ai(cfg, _analyze_system(source_name), text, cwd)
     result = extract_json(raw)
     terms = [t for t in result.get("search_terms", []) if t.strip()]
     if text not in terms:
@@ -248,33 +261,38 @@ def analyze_word(cfg: AIConfig, text: str, cwd: Path | None = None) -> dict:
     return result
 
 
-DRAFT_SYSTEM = """\
-You create Anki flashcards for a German learner. You are given the target deck's
+def _draft_system(source_name: str, target_name: str) -> str:
+    grammar_note = _GRAMMAR_NOTES.get(source_name, "")
+    grammar_line = f"\n{grammar_note}" if grammar_note else ""
+    dialect_hint = _DIALECT_HINTS.get(target_name, "")
+    dialect_clause = f" (if examples translate into {target_name}, {dialect_hint})" if dialect_hint else ""
+    return f"""\
+You create Anki flashcards for a {source_name} learner. You are given the target deck's
 field names and a few existing notes from that deck as examples.
 Write a new note for the requested word that mirrors the examples EXACTLY:
-same language per field (if examples translate into Spanish, use Latin American
-Mexican Spanish — never peninsular Spanish), same formatting, same level of detail.
-German nouns get their article (der/die/das); verbs are given as infinitive.
+same language per field{dialect_clause}, same formatting, same level of detail.{grammar_line}
 
-Keep every field monolingual: a German field holds ONLY German, a translation
+Keep every field monolingual: a {source_name} field holds ONLY {source_name}, a translation
 field holds ONLY the translation. Never append the other language, or mix
 languages within one field.
 
 Only add an example sentence if the word is ambiguous, has multiple common
 senses, or could otherwise be confused with something else — most words don't
-need one. When you do add one, put it in BOTH the German field (as a German
+need one. When you do add one, put it in BOTH the {source_name} field (as a {source_name}
 example) and the translation field, each on its own line below the headword/
 translation (a single "<br>" between them, no other separator) — but the copy
-in the translation field must be TRANSLATED, not the raw German sentence.
+in the translation field must be TRANSLATED, not the raw {source_name} sentence.
 The headword/translation line MUST end with a period right before the
 "<br>" — the "<br>" tag alone does not make text-to-speech pause, only
 sentence-ending punctuation does, and without it the headword runs straight
-into the example with no pause. Example for a Spanish translation field:
+into the example with no pause. Example (German source, Spanish translation
+field) illustrating this formatting rule — applies regardless of which
+languages you're actually working with:
 WRONG: "Hábil · Er ist sehr geschickt mit den Händen."
 WRONG: "Hábil<br>Es muy hábil con las manos." (missing period before <br>)
 RIGHT: "Hábil.<br>Es muy hábil con las manos."
 
-The German field is read aloud by text-to-speech verbatim, so keep it plainly
+The {source_name} field is read aloud by text-to-speech verbatim, so keep it plainly
 speakable: ordinary sentence punctuation only (periods, commas) and the "<br>"
 line break before an example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
@@ -293,6 +311,8 @@ def draft_fields(
     field_names: list[str],
     examples: list[dict[str, str]],
     deck: str,
+    source_name: str,
+    target_name: str,
     cwd: Path | None = None,
 ) -> dict[str, str]:
     user = (
@@ -301,29 +321,30 @@ def draft_fields(
         f"Example notes:\n{json.dumps(examples, ensure_ascii=False, indent=1)}\n\n"
         f"Create a note for: {word_display}"
     )
-    raw = call_ai(cfg, DRAFT_SYSTEM, user, cwd)
+    raw = call_ai(cfg, _draft_system(source_name, target_name), user, cwd)
     drafted = extract_json(raw)
     return {name: str(drafted.get(name, "")) for name in field_names}
 
 
-ADD_EXAMPLE_SYSTEM = """\
+def _add_example_system(source_name: str) -> str:
+    return f"""\
 You add an example sentence to an already-drafted Anki flashcard note for a
-German learner deck. You are given the deck's field names, a few existing
+{source_name} learner deck. You are given the deck's field names, a few existing
 notes to match formatting/language conventions, and the current draft.
 
-Add an example sentence to BOTH the German field and its paired translation
+Add an example sentence to BOTH the {source_name} field and its paired translation
 field, each on its own line below the existing headword/translation (a single
 "<br>" between them, no other separator) — the copy in the translation field
-must be TRANSLATED, not the raw German sentence. Leave every other field
+must be TRANSLATED, not the raw {source_name} sentence. Leave every other field
 exactly as given. The headword/translation MUST end with a period right
 before the "<br>" (add one if it's missing) — the "<br>" tag alone does not
 make text-to-speech pause, only sentence-ending punctuation does.
 
-Keep every field monolingual: a German field holds ONLY German, a translation
+Keep every field monolingual: a {source_name} field holds ONLY {source_name}, a translation
 field holds ONLY the translation. Never append the other language, or mix
 languages within one field.
 
-The German field is read aloud by text-to-speech verbatim, so keep it plainly
+The {source_name} field is read aloud by text-to-speech verbatim, so keep it plainly
 speakable: ordinary sentence punctuation only (periods, commas) and the "<br>"
 line break before the example — no quotation marks, bullets, middots ("·"),
 slashes, or other decorative separators a TTS engine would mispronounce or
@@ -342,6 +363,7 @@ def add_example(
     examples: list[dict[str, str]],
     draft: dict[str, str],
     deck: str,
+    source_name: str,
     cwd: Path | None = None,
 ) -> dict[str, str]:
     user = (
@@ -350,6 +372,6 @@ def add_example(
         f"Example notes:\n{json.dumps(examples, ensure_ascii=False, indent=1)}\n\n"
         f"Current draft:\n{json.dumps(draft, ensure_ascii=False, indent=1)}"
     )
-    raw = call_ai(cfg, ADD_EXAMPLE_SYSTEM, user, cwd)
+    raw = call_ai(cfg, _add_example_system(source_name), user, cwd)
     drafted = extract_json(raw)
     return {name: str(drafted.get(name, draft.get(name, ""))) for name in field_names}
