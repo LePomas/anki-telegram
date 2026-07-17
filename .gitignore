@@ -6,8 +6,8 @@ __pycache__/
 dist/
 *.kate-swp
 
-# README demo media + the script that generates it — regenerate locally
-# with scripts/render-demo-media.sh rather than committing binaries
-assets/cover.png
-assets/demo.webm
+# script that generates the README demo media — regenerate locally
+# with scripts/render-demo-media.sh; the media itself (assets/cover.png,
+# assets/demo.webm) is committed since README.md links to it and GitHub
+# renders it from the repo, not from a local-only path
 scripts/render-demo-media.sh

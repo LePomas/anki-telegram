@@ -9,28 +9,31 @@
     </filter>
   </defs>
 
-  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <!-- zoomed in ~25% (centered) so the card fills more of the frame at avatar size -->
+  <g transform="translate(512 512) scale(1.25) translate(-512 -512)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
 
-  <!-- back card, slightly rotated -->
-  <g transform="rotate(-8 512 512)">
-    <rect x="242" y="232" width="540" height="560" rx="44" fill="#D7E9F5"/>
-  </g>
+    <!-- back card, slightly rotated -->
+    <g transform="rotate(-8 512 512)">
+      <rect x="242" y="232" width="540" height="560" rx="44" fill="#D7E9F5"/>
+    </g>
 
-  <!-- front flashcard -->
-  <g transform="rotate(4 512 512)" filter="url(#shadow)">
-    <rect x="242" y="232" width="540" height="560" rx="44" fill="#FFFFFF"/>
-    <text x="482" y="400" font-family="DejaVu Sans" font-weight="bold" font-size="138"
-          text-anchor="middle" fill="#1A1A1A">der</text>
-    <text x="482" y="556" font-family="DejaVu Sans" font-weight="bold" font-size="138"
-          text-anchor="middle" fill="#DD0000">die</text>
-    <text x="482" y="712" font-family="DejaVu Sans" font-weight="bold" font-size="138"
-          text-anchor="middle" fill="#F5B800">das</text>
-  </g>
+    <!-- front flashcard -->
+    <g transform="rotate(4 512 512)" filter="url(#shadow)">
+      <rect x="242" y="232" width="540" height="560" rx="44" fill="#FFFFFF"/>
+      <text x="482" y="400" font-family="DejaVu Sans" font-weight="bold" font-size="138"
+            text-anchor="middle" fill="#1A1A1A">der</text>
+      <text x="482" y="556" font-family="DejaVu Sans" font-weight="bold" font-size="138"
+            text-anchor="middle" fill="#DD0000">die</text>
+      <text x="482" y="712" font-family="DejaVu Sans" font-weight="bold" font-size="138"
+            text-anchor="middle" fill="#F5B800">das</text>
+    </g>
 
-  <!-- telegram paper plane badge -->
-  <g transform="translate(748 716)">
-    <circle cx="0" cy="0" r="102" fill="#FFFFFF" filter="url(#shadow)"/>
-    <path transform="translate(-54 -45) scale(4.5)" fill="#2AABEE"
-          d="M22.7 1.2 1.6 9.4c-1.4.6-1.4 1.4-.2 1.7l5.4 1.7 2.1 6.3c.3.7.1 1 .8 1 .5 0 .8-.2 1.1-.5l2.6-2.5 5.4 4c1 .5 1.7.3 2-.9l3.5-16.7c.4-1.5-.6-2.2-1.6-1.7zM7.8 12.6l11.8-7.4c.6-.4 1.1-.2.7.2l-10 9.1-.4 4.2z"/>
+    <!-- telegram paper plane badge -->
+    <g transform="translate(748 716)">
+      <circle cx="0" cy="0" r="102" fill="#FFFFFF" filter="url(#shadow)"/>
+      <path transform="translate(-54 -45) scale(4.5)" fill="#2AABEE"
+            d="M22.7 1.2 1.6 9.4c-1.4.6-1.4 1.4-.2 1.7l5.4 1.7 2.1 6.3c.3.7.1 1 .8 1 .5 0 .8-.2 1.1-.5l2.6-2.5 5.4 4c1 .5 1.7.3 2-.9l3.5-16.7c.4-1.5-.6-2.2-1.6-1.7zM7.8 12.6l11.8-7.4c.6-.4 1.1-.2.7.2l-10 9.1-.4 4.2z"/>
+    </g>
   </g>
 </svg>
