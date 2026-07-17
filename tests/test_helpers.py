@@ -597,6 +597,35 @@ def test_remove_example_strips_br_suffix_from_every_field():
     fake_self.send_preview.assert_called_once_with(session)
 
 
+# -- bot.create_card ----------------------------------------------------------
+
+
+def test_create_card_surfaces_full_sync_conflict_without_losing_session():
+    # Arrange: note got created fine, but sync() raises because AnkiWeb wants
+    # a full sync (e.g. a 3rd device uploaded a schema-changing change since
+    # our last sync) — create_card must show the error, not swallow it, and
+    # must leave the session in place so the user isn't forced to retype.
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    session = Session(sid=7, deck_format=fmt, draft={"Front": "", "Back": "Hi."})
+    fake_self = SimpleNamespace(
+        tg=MagicMock(),
+        cfg=SimpleNamespace(chat_id=123),
+        store=MagicMock(),
+        sessions={7: session},
+    )
+    fake_self.store.sync.side_effect = RuntimeError(
+        "AnkiWeb requires a full sync; resolve it in Anki desktop first"
+    )
+    # Act
+    Bot.create_card(fake_self, session, message_id=99)
+    # Assert
+    fake_self.store.add_note.assert_called_once()
+    fake_self.tg.edit.assert_called_once_with(
+        123, 99, "⚠️ Failed: AnkiWeb requires a full sync; resolve it in Anki desktop first"
+    )
+    assert 7 in fake_self.sessions
+
+
 # -- bot._friendly_ai_error ----------------------------------------------------
 
 
