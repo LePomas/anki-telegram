@@ -530,12 +530,13 @@ class Bot:
     # -- flow: incoming word --------------------------------------------------
 
     def on_new_word(self, text: str) -> None:
+        thinking_id = self.tg.send(self.cfg.chat_id, "🤔 Thinking…")["message_id"]
         with keep_typing(self.tg, self.cfg.chat_id):
             try:
                 self.store.sync(allow_full_download=True)
             except Exception as exc:
                 log.exception("sync failed")
-                self.tg.send(self.cfg.chat_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
+                self.tg.edit(self.cfg.chat_id, thinking_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
                 return
             try:
                 analysis = ai.analyze_word(
@@ -543,7 +544,9 @@ class Bot:
                 )
             except Exception as exc:
                 log.exception("analyze failed")
-                self.tg.send(self.cfg.chat_id, f"⚠️ AI analysis failed: {esc(_friendly_ai_error(exc))}")
+                self.tg.edit(
+                    self.cfg.chat_id, thinking_id, f"⚠️ AI analysis failed: {esc(_friendly_ai_error(exc))}"
+                )
                 return
 
         matches = self.store.search(analysis["search_terms"], read_deck=self.effective_read_deck() or None)
@@ -569,6 +572,8 @@ class Bot:
             lines.append("Not in your collection.")
 
         session = self._new_session(phase="awaiting_choice", analysis=analysis)
+        session.anchor_message_id = thinking_id
+        self.message_sid[thinking_id] = session.sid
 
         create_label = "Create card" if main_hits else "⭐ Create card"
         keyboard = []
@@ -866,6 +871,7 @@ class Bot:
                 f"Deck <b>{esc(deck)}</b> is empty — no format to mirror. Pick another with /deck.",
             )
             return
+        self._update_menu(session, "🤔 Drafting card…", [])
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.draft_fields(
@@ -880,7 +886,7 @@ class Bot:
                 )
         except Exception as exc:
             log.exception("draft failed")
-            self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}")
+            self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
             return
         session.deck_format = fmt
         session.draft = draft
@@ -931,6 +937,7 @@ class Bot:
             session.draft = dict(session.example_cache)
             self.send_preview(session)
             return
+        self._update_menu(session, "🤔 Adding example…", [])
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
                 draft = ai.add_example(
@@ -944,7 +951,7 @@ class Bot:
                 )
         except Exception as exc:
             log.exception("add example failed")
-            self.tg.send(self.cfg.chat_id, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}")
+            self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
             return
         session.draft = draft
         self.send_preview(session)
@@ -1012,6 +1019,7 @@ class Bot:
         fields = {n: session.draft.get(n, "") for n in fmt.field_names}
         main = main_field(fmt.field_names)
         audio_fields = [n for n in fmt.field_names if is_audio_field(n)]
+        self.tg.edit(self.cfg.chat_id, message_id, "🤔 Saving…", [])
         with keep_typing(self.tg, self.cfg.chat_id):
             if main and fields.get(main):
                 try:

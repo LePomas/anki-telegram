@@ -703,7 +703,7 @@ def test_create_card_surfaces_full_sync_conflict_without_losing_session():
     Bot.create_card(fake_self, session, message_id=99)
     # Assert
     fake_self.store.add_note.assert_called_once()
-    fake_self.tg.edit.assert_called_once_with(
+    fake_self.tg.edit.assert_called_with(
         123, 99, "⚠️ Failed: AnkiWeb requires a full sync; resolve it in Anki desktop first"
     )
     assert 7 in fake_self.sessions
