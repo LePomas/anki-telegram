@@ -1,5 +1,7 @@
 # anki-telegram
 
+<img src="assets/cover.png" alt="Ankibot conversation in Telegram" align="right" width="220">
+
 Telegram bot for German vocabulary. Send it a word; it checks your Anki
 collection (via AnkiWeb sync) for existing cards — including other
 forms/tenses and appearances inside other cards' example sentences — then
@@ -38,6 +40,10 @@ and **Edit fields** (prefilled with the draft) if you'd rather not keep it.
 The whole thing — choice, deck pick if needed, preview, add/remove example —
 plays out by editing a single message in place, so a chat with several words
 in flight doesn't fill up with old button messages.
+
+<video src="assets/demo.webm" controls width="240"></video>
+
+_End to end: sending a word to the saved card synced back to AnkiWeb._
 
 ## Architecture
 

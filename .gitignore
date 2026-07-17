@@ -5,3 +5,9 @@ __pycache__/
 *.pyc
 dist/
 *.kate-swp
+
+# README demo media + the script that generates it — regenerate locally
+# with scripts/render-demo-media.sh rather than committing binaries
+assets/cover.png
+assets/demo.webm
+scripts/render-demo-media.sh
