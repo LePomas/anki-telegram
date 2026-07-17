@@ -48,6 +48,9 @@ def require_env(name: str) -> str:
 
 _DEFAULT_MODELS = {
     "claude": "haiku",
+    # direct Anthropic API with a key — for hosts where installing the
+    # Claude Code CLI isn't an option. Cheap tier, matching "claude"'s default.
+    "anthropic": "claude-haiku-4-5",
     # pinned "gemini-2.5-flash" etc. 404 with "no longer available to new
     # users" on newer AI Studio accounts — the rolling alias stays current.
     "gemini": "gemini-flash-latest",
@@ -63,6 +66,7 @@ _DEFAULT_MODELS = {
 # Picks offered by /settings → "Change AI model". Providers absent here only
 # have the one _DEFAULT_MODELS entry, so no picker is offered for them.
 _MODELS_BY_PROVIDER = {
+    "anthropic": ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"],
     "gemini": ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"],
     "agy": [
         "Gemini 3.5 Flash (Low)",
@@ -103,7 +107,7 @@ def _validate_provider(cfg: ai.AIConfig) -> str | None:
         return f"'{cfg.claude_bin}' not found — install Claude Code or set CLAUDE_BIN"
     if cfg.provider == "agy" and shutil.which(cfg.agy_bin) is None:
         return f"'{cfg.agy_bin}' not found — install the Antigravity CLI or set AGY_BIN"
-    if cfg.provider in ("gemini", "openrouter") and not cfg.api_key:
+    if cfg.provider in ("anthropic", "gemini", "openrouter") and not cfg.api_key:
         return f"AI_PROVIDER={cfg.provider} needs {cfg.provider.upper()}_API_KEY set"
     return None
 

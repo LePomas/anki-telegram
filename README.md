@@ -21,7 +21,8 @@ providers, and `gTTS` for audio. AI defaults to the
 [Claude Code CLI](https://claude.com/claude-code) in headless mode
 (`claude -p`), authenticated by your existing Claude subscription — no API
 key needed. Set `AI_PROVIDER` to route through something else instead:
-Gemini or OpenRouter (free-tier APIs), a local Ollama, or the
+the Anthropic API directly with a key (no CLI install needed), Gemini or
+OpenRouter (free-tier APIs), a local Ollama, or the
 [Antigravity CLI](https://antigravity.google) (`agy`, authenticated by your
 Google AI Pro/Ultra login — also no API key, and typically a more generous
 quota than Claude/Gemini's own free/pro tiers, so it's worth switching to if
@@ -59,7 +60,7 @@ _End to end: sending a word to the saved card synced back to AnkiWeb._
 ```mermaid
 flowchart LR
     user([You, in Telegram]) -->|word / button tap| bot["bot.py — long-poll loop, session state machine"]
-    bot -->|analyze_word, draft_fields| ai["ai.py — claude CLI / Gemini / OpenRouter / Ollama / agy"]
+    bot -->|analyze_word, draft_fields| ai["ai.py — claude CLI / Anthropic API / Gemini / OpenRouter / Ollama / agy"]
     bot -->|search, deck_format, add_note| store["anki_store.py — AnkiStore"]
     store --> col[(local Anki collection)]
     store -->|sync| web[(AnkiWeb)]
@@ -87,9 +88,9 @@ claude   # log in once with your Claude account, then exit
 (On a machine where you can't log in interactively, run `claude setup-token`
 elsewhere and put the token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.)
 
-Using a different `AI_PROVIDER`? `gemini`/`openrouter` just need an API key
-(see the table below); `agy`/`ollama` need their own CLI installed — see
-[antigravity.google](https://antigravity.google) / [ollama.com](https://ollama.com)
+Using a different `AI_PROVIDER`? `anthropic`/`gemini`/`openrouter` just need
+an API key (see the table below); `agy`/`ollama` need their own CLI installed
+— see [antigravity.google](https://antigravity.google) / [ollama.com](https://ollama.com)
 for that vendor's install steps. Under systemd, set `CLAUDE_BIN`/`AGY_BIN` to
 an absolute path — services often don't inherit your interactive shell's `PATH`.
 
@@ -107,7 +108,7 @@ cp .env.example .env   # then fill in the values
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Your numeric user ID (from [@userinfobot](https://t.me/userinfobot)); all other chats are ignored |
 | `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` | AnkiWeb account for sync |
-| `AI_PROVIDER` | Optional: `claude` (default), `gemini`, `openrouter`, `ollama`, or `agy` |
+| `AI_PROVIDER` | Optional: `claude` (default), `anthropic`, `gemini`, `openrouter`, `ollama`, or `agy` |
 | `LANG_SOURCE` | Optional, defaults to `de` — the language you send words in (any `gTTS`-supported code, changeable via `/settings`) |
 | `LANG_TARGET` | Optional, defaults to `es` — the language cards get translated into (changeable via `/settings`) |
 | `DATA_DIR` | Optional, defaults to `./data` (local collection, media, state) |
@@ -118,6 +119,7 @@ cp .env.example .env   # then fill in the values
 
 | Variable | Purpose |
 | --- | --- |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | Required if `AI_PROVIDER=anthropic` — key at [console.anthropic.com](https://console.anthropic.com/settings/keys) (default model `claude-haiku-4-5`) |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | Required if `AI_PROVIDER=gemini` — free key at [aistudio.google.com](https://aistudio.google.com/apikey) |
 | `GEMINI_FALLBACK_MODEL` | Optional, used automatically on a 429 from `GEMINI_MODEL` (default `gemini-flash-lite-latest`) |
 | `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | Required if `AI_PROVIDER=openrouter` — key at [openrouter.ai/keys](https://openrouter.ai/keys), many models have a free `:free` tier |

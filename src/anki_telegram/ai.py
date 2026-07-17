@@ -2,8 +2,9 @@
 
 Default is the Claude Code CLI (`claude -p`), authenticated by your Claude
 subscription — no API key needed. Optionally, set AI_PROVIDER to route
-through a free-tier HTTP API instead (Gemini, OpenRouter, or a local Ollama)
-using stdlib urllib — no extra SDK dependency."""
+through a free-tier HTTP API instead (Gemini, OpenRouter, a local Ollama, or
+the Anthropic API directly with a key) using stdlib urllib — no extra SDK
+dependency."""
 
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ _gemini_lock = threading.Lock()  # ponytail: global lock, per-model locks if thr
 
 @dataclass
 class AIConfig:
-    provider: str  # "claude" | "gemini" | "openrouter" | "ollama" | "agy"
+    provider: str  # "claude" | "anthropic" | "gemini" | "openrouter" | "ollama" | "agy"
     model: str
     api_key: str = ""
     claude_bin: str = "claude"
@@ -35,6 +36,8 @@ class AIConfig:
 def call_ai(cfg: AIConfig, system: str, user: str, cwd: Path | None = None) -> str:
     if cfg.provider == "claude":
         return _call_claude_cli(cfg.model, system, user, cfg.claude_bin, cwd)
+    if cfg.provider == "anthropic":
+        return _call_anthropic_api(cfg.model, system, user, cfg.api_key)
     if cfg.provider == "gemini":
         return _call_gemini(cfg.model, system, user, cfg.api_key, cfg.fallback_model)
     if cfg.provider == "openrouter":
@@ -140,6 +143,23 @@ def _post_json(url: str, body: dict, headers: dict, timeout: int = 60) -> dict:
             log.warning("request to %s failed, retrying in %.1fs: %s", safe_url, delay, last_err)
             time.sleep(delay)
     raise RuntimeError(f"request to {safe_url} failed: {last_err}")
+
+
+def _call_anthropic_api(model: str, system: str, user: str, api_key: str) -> str:
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set")
+    body = {
+        "model": model,
+        "max_tokens": 4096,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    data = _post_json("https://api.anthropic.com/v1/messages", body, headers)
+    try:
+        return next(b["text"] for b in data["content"] if b["type"] == "text")
+    except (KeyError, StopIteration) as exc:
+        raise RuntimeError(f"unexpected Anthropic response: {data}") from exc
 
 
 def _gemini_url(model: str, api_key: str) -> str:

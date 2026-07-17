@@ -289,6 +289,47 @@ def test_call_gemini_no_fallback_on_non_429_error():
             assert "HTTP 500" in str(exc)
 
 
+# -- ai._call_anthropic_api (via call_ai) --------------------------------------
+
+
+def test_call_anthropic_api_missing_api_key_raises():
+    # Arrange: null/empty input boundary
+    cfg = ai.AIConfig(provider="anthropic", model="claude-haiku-4-5", api_key="")
+    # Act / Assert
+    try:
+        ai.call_ai(cfg, "sys", "usr")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "ANTHROPIC_API_KEY" in str(exc)
+
+
+def test_call_anthropic_api_success():
+    # Arrange
+    cfg = ai.AIConfig(provider="anthropic", model="claude-haiku-4-5", api_key="key")
+    payload = {"content": [{"type": "text", "text": "hallo"}]}
+    with patch("urllib.request.urlopen", return_value=_fake_response(payload)) as mock_urlopen:
+        # Act
+        result = ai.call_ai(cfg, "sys", "usr")
+    # Assert
+    assert result == "hallo"
+    req = mock_urlopen.call_args[0][0]
+    assert req.full_url == "https://api.anthropic.com/v1/messages"
+    assert req.headers["X-api-key"] == "key"
+    assert req.headers["Anthropic-version"] == "2023-06-01"
+
+
+def test_call_anthropic_api_unexpected_response_raises():
+    # Arrange: response missing the expected shape
+    cfg = ai.AIConfig(provider="anthropic", model="claude-haiku-4-5", api_key="key")
+    with patch("urllib.request.urlopen", return_value=_fake_response({"nope": True})):
+        # Act / Assert
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "unexpected Anthropic response" in str(exc)
+
+
 # -- ai._call_agy_cli (via call_ai) -------------------------------------------
 
 
