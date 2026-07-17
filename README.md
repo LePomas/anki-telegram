@@ -87,6 +87,20 @@ claude   # log in once with your Claude account, then exit
 (On a machine where you can't log in interactively, run `claude setup-token`
 elsewhere and put the token in `.env` as `CLAUDE_CODE_OAUTH_TOKEN`.)
 
+Only needed if you're using a different `AI_PROVIDER`:
+
+```sh
+# agy (AI_PROVIDER=agy) — install per https://antigravity.google, then:
+agy   # log in once with your Google account, then exit
+
+# ollama (AI_PROVIDER=ollama) — install per https://ollama.com, then:
+ollama pull llama3.1   # or whichever OLLAMA_MODEL you set
+```
+
+`gemini`/`openrouter` need no local install, just an API key (see the table
+below). Under systemd, set `CLAUDE_BIN`/`AGY_BIN` to an absolute path —
+services often don't inherit your interactive shell's `PATH`.
+
 ```sh
 uv sync
 cp .env.example .env   # then fill in the values
@@ -94,26 +108,39 @@ cp .env.example .env   # then fill in the values
 
 `.env` values:
 
+**General:**
+
 | Variable | Purpose |
 | --- | --- |
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | Your numeric user ID (from [@userinfobot](https://t.me/userinfobot)); all other chats are ignored |
 | `ANKIWEB_USERNAME` / `ANKIWEB_PASSWORD` | AnkiWeb account for sync |
 | `AI_PROVIDER` | Optional: `claude` (default), `gemini`, `openrouter`, `ollama`, or `agy` |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Optional — long-lived token from `claude setup-token` if the host isn't logged in |
-| `CLAUDE_MODEL` | Optional, passed to `claude --model` (default `haiku`) |
-| `CLAUDE_BIN` | Optional path to the `claude` binary (useful under systemd) |
-| `GEMINI_API_KEY` / `GEMINI_MODEL` | Required if `AI_PROVIDER=gemini` — free key at [aistudio.google.com](https://aistudio.google.com/apikey) |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | Required if `AI_PROVIDER=openrouter` — key at [openrouter.ai/keys](https://openrouter.ai/keys), many models have a free `:free` tier |
-| `OLLAMA_HOST` / `OLLAMA_MODEL` | Used if `AI_PROVIDER=ollama` — local, no key, run `ollama pull <model>` first |
-| `OLLAMA_API_KEY` | Optional, only for a remote/auth-protected Ollama or Ollama Cloud |
-| `AGY_MODEL` | Optional, passed to `agy --model` if `AI_PROVIDER=agy` (default `Gemini 3.5 Flash (Medium)`) |
-| `AGY_BIN` | Optional path to the `agy` binary (useful under systemd) — install from [antigravity.google](https://antigravity.google) |
 | `LANG_SOURCE` | Optional, defaults to `de` — the language you send words in (any `gTTS`-supported code, changeable via `/settings`) |
 | `LANG_TARGET` | Optional, defaults to `es` — the language cards get translated into (changeable via `/settings`) |
 | `DATA_DIR` | Optional, defaults to `./data` (local collection, media, state) |
 | `ANKI_READ_DECK` | Optional, restricts the "already exists?" search to this deck (default: whole collection) |
 | `ANKI_WRITE_DECK` | Optional, default target deck for new cards (still changeable via `/deck`) |
+
+**API-based providers** (HTTP call, no local binary needed):
+
+| Variable | Purpose |
+| --- | --- |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Required if `AI_PROVIDER=gemini` — free key at [aistudio.google.com](https://aistudio.google.com/apikey) |
+| `GEMINI_FALLBACK_MODEL` | Optional, used automatically on a 429 from `GEMINI_MODEL` (default `gemini-flash-lite-latest`) |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` | Required if `AI_PROVIDER=openrouter` — key at [openrouter.ai/keys](https://openrouter.ai/keys), many models have a free `:free` tier |
+| `OLLAMA_HOST` / `OLLAMA_MODEL` | Used if `AI_PROVIDER=ollama` — local, no key, run `ollama pull <model>` first |
+| `OLLAMA_API_KEY` | Optional, only for a remote/auth-protected Ollama or Ollama Cloud |
+
+**CLI-based providers** (shells out to a local binary):
+
+| Variable | Purpose |
+| --- | --- |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Optional — long-lived token from `claude setup-token` if the host isn't logged in |
+| `CLAUDE_MODEL` | Optional, passed to `claude --model` (default `haiku`) |
+| `CLAUDE_BIN` | Optional path to the `claude` binary (useful under systemd) |
+| `AGY_MODEL` | Optional, passed to `agy --model` if `AI_PROVIDER=agy` (default `Gemini 3.5 Flash (Medium)`) |
+| `AGY_BIN` | Optional path to the `agy` binary (useful under systemd) — install from [antigravity.google](https://antigravity.google) |
 
 ## Run
 
