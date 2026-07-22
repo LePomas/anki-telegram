@@ -1039,10 +1039,10 @@ class Bot:
                     if audio_fields:
                         fields[audio_fields[0]] = sound
                     else:
-                        # notetype has no dedicated audio field (e.g. KontextB1Plus Basic) —
-                        # inline the sound tag into the main field, matching that deck's
-                        # existing convention of "text [sound:...]" in one field.
-                        fields[main] = f"{fields[main]} {sound}"
+                        # notetype has no dedicated audio field — inline the sound tag
+                        # into the main field, on its own line (a plain space glues the
+                        # play icon onto the same line as the text).
+                        fields[main] = f"{fields[main]}<br>{sound}"
                 except Exception as exc:
                     log.warning("TTS failed, saving without audio: %s", exc)
             self._show_status(session, "💾 Saving…", message_id)
