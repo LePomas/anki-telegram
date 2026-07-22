@@ -65,9 +65,16 @@ def _call_claude_cli(
     ]
     last_err = ""
     for attempt in (1, 2):
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=180, cwd=cwd
-        )
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=180, cwd=cwd
+            )
+        except subprocess.TimeoutExpired:
+            last_err = "timed out after 180s"
+            if attempt == 1:
+                log.warning("claude CLI timed out, retrying")
+                time.sleep(3)
+            continue
         if proc.returncode == 0:
             data = json.loads(proc.stdout)
             if data.get("is_error"):
@@ -88,9 +95,16 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
     cmd = [agy_bin, "--model", model, "-p", f"{system}\n\n{user}"]
     last_err = ""
     for attempt in (1, 2):
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=180, cwd=cwd
-        )
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=180, cwd=cwd
+            )
+        except subprocess.TimeoutExpired:
+            last_err = "timed out after 180s"
+            if attempt == 1:
+                log.warning("agy CLI timed out, retrying")
+                time.sleep(3)
+            continue
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
         last_err = (proc.stderr or proc.stdout)[-300:]
