@@ -63,13 +63,27 @@ def dodge_gtts_comma_plural_shorthand(text: str) -> str:
     return _COMMA_PLURAL_SHORTHAND_RE.sub("", text, count=1)
 
 
+_NUMBER_MARKER_PAREN_RE = re.compile(r"\s*\((?:ohne\s+)?(?:Pl|Sg)\.?\)", re.IGNORECASE)
+
+
+def dodge_gtts_number_marker_paren(text: str) -> str:
+    """Dictionary-style number-marker annotations in parens -- "(Pl.)",
+    "(pl.)", "(Sg)", "(ohne pl)" -- gTTS reads them literally (spelling out
+    "P L" or "S G") instead of skipping them. Strip the whole parenthetical;
+    unlike the comma-plural-shorthand dodge this can match anywhere in the
+    text since "Pl"/"Sg" glued in parens never occurs as anything else."""
+    return _NUMBER_MARKER_PAREN_RE.sub("", text)
+
+
 def _prepare_speakable(text: str, lang: str) -> str:
     """Apply TTS-safety dodges before handing text to gTTS. The rection-
-    shorthand and plural-shorthand dodges are German-grammar-specific, so
-    they only run for a German source; the abbreviation-bug dodge fires
-    "regardless of lang=" per its own docstring, so it always runs."""
+    shorthand and plural/number-marker shorthand dodges are German-grammar-
+    specific, so they only run for a German source; the abbreviation-bug
+    dodge fires "regardless of lang=" per its own docstring, so it always
+    runs."""
     if lang == "de":
         text = dodge_gtts_comma_plural_shorthand(text)
+        text = dodge_gtts_number_marker_paren(text)
         text = dodge_gtts_rection_shorthand(text)
     return dodge_gtts_abbreviation_bug(text)
 
