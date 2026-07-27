@@ -50,12 +50,26 @@ def dodge_gtts_rection_shorthand(text: str) -> str:
     return re.sub(r"\s{2,}", " ", text).strip()
 
 
+_COMMA_PLURAL_SHORTHAND_RE = re.compile(r",\s*-[-–¨/,\sA-Za-zÄÖÜäöüß]{0,19}(?=[\s.,;:!?]|$)")
+
+
+def dodge_gtts_comma_plural_shorthand(text: str) -> str:
+    """Noun headwords write dictionary-style plural shorthand glued after a
+    comma -- "der Laie, -n", "das Wort, -ö, er/-e" -- gTTS reads that
+    literally (the "-n" comes out as the spoken letter "N"). Only strips a
+    shorthand tail sitting right after the headword's own comma (must start
+    with "-" and stay short), so a genuine sentence clause elsewhere in the
+    text is untouched."""
+    return _COMMA_PLURAL_SHORTHAND_RE.sub("", text, count=1)
+
+
 def _prepare_speakable(text: str, lang: str) -> str:
     """Apply TTS-safety dodges before handing text to gTTS. The rection-
-    shorthand expansion is German-grammar-specific, so it only runs for a
-    German source; the abbreviation-bug dodge fires "regardless of lang="
-    per its own docstring, so it always runs."""
+    shorthand and plural-shorthand dodges are German-grammar-specific, so
+    they only run for a German source; the abbreviation-bug dodge fires
+    "regardless of lang=" per its own docstring, so it always runs."""
     if lang == "de":
+        text = dodge_gtts_comma_plural_shorthand(text)
         text = dodge_gtts_rection_shorthand(text)
     return dodge_gtts_abbreviation_bug(text)
 
