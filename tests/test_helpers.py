@@ -384,6 +384,101 @@ def test_call_agy_cli_exhausts_retries_raises():
             assert "boom" in str(exc)
 
 
+
+def test_call_agy_cli_error_keeps_head_so_heal_can_match():
+    # The heal path keys off "invalid model selection" in the raised message;
+    # agy prints that first, then a long model list — the head must survive.
+    cfg = ai.AIConfig(provider="agy", model="Gemini 9 Flash (Low)", agy_bin="agy")
+    stderr = 'Error: invalid model selection (--model "x"): not recognized\n' + "\n".join(
+        f"  Gemini 3.{n} Flash (Low)" for n in range(40)
+    )
+    with patch(
+        "anki_telegram.ai.subprocess.run", side_effect=[_fake_proc(1, "", stderr)] * 2
+    ), patch("anki_telegram.ai.time.sleep"):
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "invalid model selection" in str(exc)
+
+
+def test_parse_agy_models():
+    out = (
+        "Fetching available models...\n"
+        "gemini-3.7-flash-high\tGemini 3.7 Flash (High)\n"
+        "gemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n"
+        "\n"
+    )
+    assert ai._parse_agy_models(out) == ["Gemini 3.7 Flash (High)", "Gemini 3.1 Pro (Low)"]
+
+
+def test_ai_heal_retry_refreshes_stale_agy_model():
+    from anki_telegram import bot as botmod
+    fake_state = SimpleNamespace(data={}, save=MagicMock())
+    with patch("anki_telegram.bot.AnkiStore"), patch(
+        "anki_telegram.bot.StateStore", return_value=fake_state
+    ):
+        bot = Bot(_make_cfg(ai=ai.AIConfig(provider="agy", model="Gemini 9 Flash (Low)", agy_bin="agy")))
+    calls = []
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError('agy CLI failed: Error: invalid model selection (--model "x")')
+        return "ok"
+    # newest Flash first in agy's order; old model was (Low) -> keep (Low)
+    fresh = ["Gemini 3.7 Flash (High)", "Gemini 3.7 Flash (Low)", "Gemini 3.6 Flash (Low)"]
+    saved = botmod._MODELS_BY_PROVIDER["agy"]
+    try:
+        with patch("anki_telegram.ai.agy_models", return_value=fresh):
+            result = bot._ai_heal_retry(flaky)
+        assert result == "ok"
+        assert calls == [1, 1]
+        assert bot.cfg.ai.model == "Gemini 3.7 Flash (Low)"
+        assert fake_state.data["ai_model"] == "Gemini 3.7 Flash (Low)"
+        assert botmod._MODELS_BY_PROVIDER["agy"] == fresh
+        fake_state.save.assert_called_once()
+    finally:
+        botmod._MODELS_BY_PROVIDER["agy"] = saved
+
+
+def test_ai_heal_retry_without_effort_takes_first_flash():
+    from anki_telegram import bot as botmod
+    fake_state = SimpleNamespace(data={}, save=MagicMock())
+    with patch("anki_telegram.bot.AnkiStore"), patch(
+        "anki_telegram.bot.StateStore", return_value=fake_state
+    ):
+        bot = Bot(_make_cfg(ai=ai.AIConfig(provider="agy", model="bare-name", agy_bin="agy")))
+    hits = []
+    def flaky():
+        hits.append(1)
+        if len(hits) == 1:
+            raise RuntimeError("agy CLI failed: Error: invalid model selection (--model x)")
+        return "ok"
+    fresh = ["Gemini 3.1 Pro (High)", "Gemini 3.7 Flash (High)", "Gemini 3.6 Flash (Low)"]
+    keep = botmod._MODELS_BY_PROVIDER["agy"]
+    try:
+        with patch("anki_telegram.ai.agy_models", return_value=fresh):
+            assert bot._ai_heal_retry(flaky) == "ok"
+        assert bot.cfg.ai.model == "Gemini 3.7 Flash (High)"
+    finally:
+        botmod._MODELS_BY_PROVIDER["agy"] = keep
+
+
+def test_ai_heal_retry_reraises_non_model_errors():
+    fake_state = SimpleNamespace(data={}, save=MagicMock())
+    with patch("anki_telegram.bot.AnkiStore"), patch(
+        "anki_telegram.bot.StateStore", return_value=fake_state
+    ):
+        bot = Bot(_make_cfg(ai=ai.AIConfig(provider="agy", model="m", agy_bin="agy")))
+    def boom():
+        raise RuntimeError("agy CLI failed: timed out after 180s")
+    try:
+        bot._ai_heal_retry(boom)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "timed out" in str(exc)
+
+
 # -- bot._ai_config_from_env ---------------------------------------------------
 
 

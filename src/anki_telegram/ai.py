@@ -107,11 +107,31 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
             continue
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
-        last_err = (proc.stderr or proc.stdout)[-300:]
+        # head, not tail: agy leads with the reason then dumps the model
+        # list; a tail slice drops the line the heal path keys off.
+        last_err = (proc.stderr or proc.stdout).strip()[:400]
         if attempt == 1:
             log.warning("agy CLI exit %s, retrying: %s", proc.returncode, last_err)
             time.sleep(3)
     raise RuntimeError(f"agy CLI failed: {last_err}")
+
+
+def _parse_agy_models(stdout: str) -> list[str]:
+    """Display names from `agy models` output (one `slug<TAB>display` per line)."""
+    names = []
+    for line in stdout.splitlines():
+        _slug, tab, display = line.partition("\t")
+        if tab:
+            names.append(display.strip())
+    return names
+
+
+def agy_models(agy_bin: str = "agy", cwd: Path | None = None) -> list[str]:
+    """Live model list from the agy CLI, in agy's own order."""
+    proc = subprocess.run(
+        [agy_bin, "models"], capture_output=True, text=True, timeout=30, cwd=cwd
+    )
+    return _parse_agy_models(proc.stdout)
 
 
 def _extract_error_message(stdout: str) -> str:

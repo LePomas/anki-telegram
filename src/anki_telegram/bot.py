@@ -60,7 +60,7 @@ _DEFAULT_MODELS = {
     # same model family, also free on Ollama Cloud with this account.
     "ollama": "nemotron-3-ultra",
     # Antigravity CLI, billed through the caller's Google AI Pro/Ultra plan.
-    "agy": "Gemini 3.5 Flash (Medium)",
+    "agy": "Gemini 3.7 Flash (Medium)",
 }
 
 # Picks offered by /settings → "Change AI model". Providers absent here only
@@ -69,9 +69,12 @@ _MODELS_BY_PROVIDER = {
     "anthropic": ["claude-haiku-4-5", "claude-sonnet-5", "claude-opus-4-8"],
     "gemini": ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-pro-latest"],
     "agy": [
-        "Gemini 3.5 Flash (Low)",
-        "Gemini 3.5 Flash (Medium)",
-        "Gemini 3.5 Flash (High)",
+        "Gemini 3.7 Flash (Low)",
+        "Gemini 3.7 Flash (Medium)",
+        "Gemini 3.7 Flash (High)",
+        "Gemini 3.6 Flash (Low)",
+        "Gemini 3.6 Flash (Medium)",
+        "Gemini 3.6 Flash (High)",
         "Gemini 3.1 Pro (Low)",
         "Gemini 3.1 Pro (High)",
         "Claude Sonnet 4.6 (Thinking)",
@@ -540,6 +543,35 @@ class Bot:
 
     # -- flow: incoming word --------------------------------------------------
 
+    def _ai_heal_retry(self, call):
+        """Run an AI call; if agy rejects a since-renamed model, refresh the
+        model list from `agy models`, switch to the latest Flash model at the
+        old model's effort, persist it, and retry once. Fires only on agy's
+        "invalid model selection" error."""
+        try:
+            return call()
+        except Exception as exc:
+            if not (
+                self.cfg.ai.provider == "agy"
+                and "invalid model selection" in str(exc)
+            ):
+                raise
+            models = ai.agy_models(self.cfg.ai.agy_bin, self.cfg.data_dir)
+            flashes = [m for m in models if "flash" in m.lower()]
+            cur = self.cfg.ai.model
+            effort = cur[cur.rfind("("):] if "(" in cur else ""
+            flash = next((m for m in flashes if effort and m.endswith(effort)), "") or (
+                flashes[0] if flashes else ""
+            )
+            if not flash:
+                raise
+            _MODELS_BY_PROVIDER["agy"] = models
+            self.cfg.ai = replace(self.cfg.ai, model=flash)
+            self.state.data["ai_model"] = flash
+            self.state.save()
+            log.warning("agy model was stale; refreshed list, now %r", flash)
+            return call()
+
     def on_new_word(self, text: str) -> None:
         thinking_id = self.tg.send(self.cfg.chat_id, "⏳ Thinking…")["message_id"]
         with keep_typing(self.tg, self.cfg.chat_id):
@@ -550,9 +582,9 @@ class Bot:
                 self.tg.edit(self.cfg.chat_id, thinking_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
                 return
             try:
-                analysis = ai.analyze_word(
+                analysis = self._ai_heal_retry(lambda: ai.analyze_word(
                     self.cfg.ai, text, lang_name(self.cfg.lang_source), cwd=self.cfg.data_dir
-                )
+                ))
             except Exception as exc:
                 log.exception("analyze failed")
                 self.tg.edit(
@@ -885,7 +917,7 @@ class Bot:
         self._show_status(session, "✏️ Drafting card…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
-                draft = ai.draft_fields(
+                draft = self._ai_heal_retry(lambda: ai.draft_fields(
                     self.cfg.ai,
                     session.analysis.get("display", ""),
                     fmt.field_names,
@@ -894,7 +926,7 @@ class Bot:
                     lang_name(self.cfg.lang_source),
                     lang_name(self.cfg.lang_target),
                     cwd=self.cfg.data_dir,
-                )
+                ))
         except Exception as exc:
             log.exception("draft failed")
             self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
@@ -951,7 +983,7 @@ class Bot:
         self._show_status(session, "💬 Adding example…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
-                draft = ai.add_example(
+                draft = self._ai_heal_retry(lambda: ai.add_example(
                     self.cfg.ai,
                     fmt.field_names,
                     fmt.examples,
@@ -959,7 +991,7 @@ class Bot:
                     fmt.deck,
                     lang_name(self.cfg.lang_source),
                     cwd=self.cfg.data_dir,
-                )
+                ))
         except Exception as exc:
             log.exception("add example failed")
             self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
