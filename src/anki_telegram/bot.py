@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -23,6 +24,9 @@ from .anki_store import AnkiStore, DeckFormat, is_audio_field, is_id_field, main
 log = logging.getLogger("anki_telegram")
 
 POLL_TIMEOUT = 50
+# ponytail: fixed cap sized for the 1 GB Radxa host (one local CLI process per
+# call); make it an env var if a bigger host or HTTP-only provider needs more.
+AI_CONCURRENCY = 3
 
 
 # -- config -------------------------------------------------------------------
@@ -329,6 +333,7 @@ class StateStore:
     def __init__(self, path: Path):
         self.path = path
         self.data: dict = {}
+        self._lock = threading.Lock()  # poll thread (offset) and workers both save
         if path.is_file():
             try:
                 self.data = json.loads(path.read_text())
@@ -338,8 +343,11 @@ class StateStore:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data))
-        tmp.replace(self.path)
+        with self._lock:
+            # .copy() is atomic under the GIL, so a concurrent key insert
+            # can't break json.dumps mid-iteration.
+            tmp.write_text(json.dumps(self.data.copy()))
+            tmp.replace(self.path)
 
 
 # -- bot ------------------------------------------------------------------------
@@ -366,6 +374,7 @@ class Session:
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
     anchor_message_id: int | None = None  # the one message this word's flow edits in place
     anchor_text: str = ""  # last real (non-status) text the anchor was set to
+    busy: bool = False  # an AI call for this word is in flight; taps are ignored
 
 
 class Bot:
@@ -401,6 +410,55 @@ class Bot:
         # their session regardless of how many other words are in flight.
         self._next_sid = 1
         self.message_sid: dict[int, int] = {}
+        # Every update runs on a pool thread holding `_lock`, so sessions,
+        # state, and the (non-thread-safe) Anki collection stay serial. Only
+        # AI calls drop the lock (see `_ai`), which is what lets several words
+        # be analyzed/drafted at once.
+        self._lock = threading.Lock()
+        self._ai_slots = threading.Semaphore(AI_CONCURRENCY)
+        self._pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="update")
+        self._inflight: set = set()
+
+    def _spawn(self, fn, *args) -> None:
+        fut = self._pool.submit(self._run_locked, fn, *args)
+        self._inflight.add(fut)
+        fut.add_done_callback(self._inflight.discard)
+
+    def _drain(self) -> None:
+        """Wait for every spawned task, including ones spawned by tasks
+        (a multi-line message spawns one task per word)."""
+        while self._inflight:
+            wait(list(self._inflight))
+
+    def _run_locked(self, fn, *args) -> None:
+        with self._lock:
+            try:
+                fn(*args)
+            except Exception:
+                log.exception("error handling update")
+                try:
+                    self.tg.send(self.cfg.chat_id, "⚠️ Internal error — check the logs.")
+                except Exception:
+                    pass
+
+    def _ai(self, session: Session | None, fn, *args, **kwargs):
+        """Run one AI call with the global lock released (other words keep
+        moving) and an AI slot held (caps concurrent CLI processes). Marks
+        the session busy so a repeated tap doesn't start a second call."""
+        if session is not None:
+            session.busy = True
+        self._lock.release()
+        try:
+            with self._ai_slots:
+                return fn(*args, **kwargs)
+        finally:
+            self._lock.acquire()
+            if session is not None:
+                session.busy = False
+
+    def _alive(self, session: Session) -> bool:
+        """False if the word was cancelled/finished while its AI call ran."""
+        return self.sessions.get(session.sid) is session
 
     def _new_session(self, **kwargs) -> Session:
         sid = self._next_sid
@@ -469,14 +527,15 @@ class Bot:
                 self.on_text(text, reply_to)
         elif "callback_query" in update:
             cq = update["callback_query"]
+            toast = None
+            if cq.get("from", {}).get("id") == self.cfg.chat_id:
+                msg = cq.get("message", {})
+                toast = self.on_callback(cq.get("data", ""), msg.get("message_id", 0))
             try:
-                self.tg.call("answerCallbackQuery", callback_query_id=cq["id"])
+                params = {"text": toast} if toast else {}
+                self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], **params)
             except Exception:
                 pass
-            if cq.get("from", {}).get("id") != self.cfg.chat_id:
-                return
-            msg = cq.get("message", {})
-            self.on_callback(cq.get("data", ""), msg.get("message_id", 0))
 
     def on_text(self, text: str, reply_to: int | None = None) -> None:
         cmd = text.split("@")[0].lower() if text.startswith("/") else ""
@@ -520,7 +579,7 @@ class Bot:
         for line in text.splitlines():
             line = line.strip()
             if line:
-                self.on_new_word(line)
+                self._spawn(self.on_new_word, line)  # each word on its own thread
 
     def on_cancel(self, reply_to: int | None) -> None:
         sid = self.message_sid.get(reply_to) if reply_to is not None else None
@@ -582,8 +641,9 @@ class Bot:
                 self.tg.edit(self.cfg.chat_id, thinking_id, f"⚠️ AnkiWeb sync failed: {esc(str(exc))}")
                 return
             try:
-                analysis = self._ai_heal_retry(lambda: ai.analyze_word(
-                    self.cfg.ai, text, lang_name(self.cfg.lang_source), cwd=self.cfg.data_dir
+                analysis = self._ai_heal_retry(lambda: self._ai(
+                    None, ai.analyze_word,
+                    self.cfg.ai, text, lang_name(self.cfg.lang_source), cwd=self.cfg.data_dir,
                 ))
             except Exception as exc:
                 log.exception("analyze failed")
@@ -630,18 +690,20 @@ class Bot:
 
     # -- flow: option picked ---------------------------------------------------
 
-    def on_callback(self, data: str, message_id: int) -> None:
+    def on_callback(self, data: str, message_id: int) -> str | None:
+        """Returns a toast for answerCallbackQuery when the tap is ignored.
+        Ignored taps never edit the message: a double-tapped Confirm would
+        otherwise overwrite "✅ Saved" with a "session gone" error."""
         try:
             action, sid, index = parse_callback_data(data)
         except ValueError:
             log.warning("unrecognized callback data: %s", data)
-            return
+            return None
         session = self.sessions.get(sid)
         if session is None:
-            self.tg.edit(
-                self.cfg.chat_id, message_id, "This word's session is gone — send it again."
-            )
-            return
+            return "This word's session is gone — send it again."
+        if session.busy:
+            return "Still working…"
         if action == "deck_pick":
             assert index is not None
             self.on_deck_picked(session, index)
@@ -699,6 +761,7 @@ class Bot:
             self.create_card(session, message_id)
         else:
             log.warning("unrecognized opt action: %s", action)
+        return None
 
     def prompt_deck(self, session: Session, reason: str) -> None:
         decks = self.store.deck_names()
@@ -917,7 +980,8 @@ class Bot:
         self._show_status(session, "✏️ Drafting card…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
-                draft = self._ai_heal_retry(lambda: ai.draft_fields(
+                draft = self._ai_heal_retry(lambda: self._ai(
+                    session, ai.draft_fields,
                     self.cfg.ai,
                     session.analysis.get("display", ""),
                     fmt.field_names,
@@ -929,7 +993,10 @@ class Bot:
                 ))
         except Exception as exc:
             log.exception("draft failed")
-            self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
+            if self._alive(session):
+                self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
+            return
+        if not self._alive(session):
             return
         session.deck_format = fmt
         session.draft = draft
@@ -983,7 +1050,8 @@ class Bot:
         self._show_status(session, "💬 Adding example…")
         try:
             with keep_typing(self.tg, self.cfg.chat_id):
-                draft = self._ai_heal_retry(lambda: ai.add_example(
+                draft = self._ai_heal_retry(lambda: self._ai(
+                    session, ai.add_example,
                     self.cfg.ai,
                     fmt.field_names,
                     fmt.examples,
@@ -994,7 +1062,10 @@ class Bot:
                 ))
         except Exception as exc:
             log.exception("add example failed")
-            self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
+            if self._alive(session):
+                self._update_menu(session, f"⚠️ AI draft failed: {esc(_friendly_ai_error(exc))}", [])
+            return
+        if not self._alive(session):
             return
         session.draft = draft
         self.send_preview(session)
@@ -1151,15 +1222,9 @@ class Bot:
             for update in updates:
                 self.state.data["offset"] = update["update_id"] + 1
                 self.state.save()
-                try:
-                    self.handle_update(update)
-                except Exception:
-                    log.exception("error handling update")
-                    try:
-                        self.tg.send(self.cfg.chat_id, "⚠️ Internal error — check the logs.")
-                    except Exception:
-                        pass
+                self._spawn(self.handle_update, update)
             if once:
+                self._drain()
                 return
 
 

@@ -4,6 +4,8 @@ so no real CLI or network call ever happens)."""
 
 import io
 import os
+import threading
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -891,6 +893,133 @@ def test_help_text_mentions_configured_source_language():
     fake_self = SimpleNamespace(cfg=SimpleNamespace(lang_source="fr"))
     text = Bot.help_text(fake_self)
     assert "Send me a French word or phrase." in text
+
+
+# -- bot concurrency -------------------------------------------------------------
+
+
+def _concurrent_bot():
+    """A Bot with real lock/semaphore/pool but mocked Telegram + Anki."""
+    bot = Bot.__new__(Bot)
+    bot.cfg = SimpleNamespace(
+        chat_id=123, ai=SimpleNamespace(provider="agy", model="m"),
+        lang_source="de", lang_target="es", data_dir=Path("."), read_deck="",
+    )
+    bot.tg = MagicMock()
+    ids = iter(range(1000, 2000))
+    bot.tg.send.side_effect = lambda *a, **k: {"message_id": next(ids)}
+    bot.tg.edit.side_effect = lambda chat_id, message_id, *a, **k: message_id
+    bot.store = MagicMock()
+    bot.store.search.return_value = []
+    bot.state = SimpleNamespace(data={})
+    bot.sessions = {}
+    bot.message_sid = {}
+    bot._next_sid = 1
+    bot._lock = threading.Lock()
+    bot._ai_slots = threading.Semaphore(3)
+    from concurrent.futures import ThreadPoolExecutor
+    bot._pool = ThreadPoolExecutor(max_workers=16)
+    bot._inflight = set()
+    return bot
+
+
+def _slow_analyze(delay, tracker=None):
+    def fake(cfg, text, source_name, cwd=None):
+        if tracker is not None:
+            with tracker["lock"]:
+                tracker["now"] += 1
+                tracker["max"] = max(tracker["max"], tracker["now"])
+        time.sleep(delay)
+        if tracker is not None:
+            with tracker["lock"]:
+                tracker["now"] -= 1
+        return {"display": text, "lemma": text, "search_terms": [text]}
+    return fake
+
+
+def test_words_are_analyzed_in_parallel_not_one_after_another():
+    # Arrange: two words, each AI call takes 0.5s
+    bot = _concurrent_bot()
+    with patch.object(ai, "analyze_word", _slow_analyze(0.5)):
+        start = time.monotonic()
+        # Act: one multi-line message, as the user would send it
+        bot._spawn(bot.on_text, "eins\nzwei")
+        bot._drain()
+        elapsed = time.monotonic() - start
+    # Assert: overlapped (~0.5s), not serial (~1.0s); both got a session
+    assert elapsed < 0.9, elapsed
+    assert len(bot.sessions) == 2
+
+
+def test_ai_calls_are_capped_at_three_in_flight():
+    bot = _concurrent_bot()
+    tracker = {"lock": threading.Lock(), "now": 0, "max": 0}
+    with patch.object(ai, "analyze_word", _slow_analyze(0.3, tracker)):
+        for word in ("a", "b", "c", "d"):
+            bot._spawn(bot.on_new_word, word)
+        bot._drain()
+    assert tracker["max"] == 3, tracker
+    assert len(bot.sessions) == 4
+
+
+def _confirm_update(update_id, sid):
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": f"cq{update_id}",
+            "from": {"id": 123},
+            "message": {"message_id": 99},
+            "data": f"opt:confirm:{sid}",
+        },
+    }
+
+
+def test_double_tapped_confirm_saves_once_and_keeps_saved_message():
+    # Arrange
+    bot = _concurrent_bot()
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    session = Session(sid=7, deck_format=fmt, draft={"Front": "Hund", "Back": "perro"})
+    bot.sessions[7] = session
+    # Act: same Confirm button tapped twice
+    bot._spawn(bot.handle_update, _confirm_update(1, 7))
+    bot._spawn(bot.handle_update, _confirm_update(2, 7))
+    bot._drain()
+    # Assert: one note, no "session gone" edit over the saved message,
+    # and the second tap was answered with a toast instead
+    bot.store.add_note.assert_called_once()
+    edited = [c.args[2] for c in bot.tg.edit.call_args_list]
+    assert not any("gone" in t for t in edited), edited
+    assert edited[-1].startswith("✅ Saved")
+    answers = [c.kwargs for c in bot.tg.call.call_args_list if c.args[0] == "answerCallbackQuery"]
+    assert any("gone" in a.get("text", "") for a in answers), answers
+
+
+def test_tap_on_busy_session_is_ignored_with_toast():
+    bot = _concurrent_bot()
+    bot.sessions[7] = Session(sid=7, busy=True)
+    assert Bot.on_callback(bot, "opt:create:7", 99) == "Still working…"
+    bot.tg.edit.assert_not_called()
+
+
+def test_cancelled_word_drops_its_late_ai_draft():
+    # Arrange: word is cancelled while its draft call is in flight
+    bot = _concurrent_bot()
+    fmt = DeckFormat("Deutsch", "Basic", ["Front", "Back"], [])
+    bot.store.deck_format.return_value = fmt
+    session = Session(sid=7, anchor_message_id=50)
+    bot.sessions[7] = session
+
+    def fake_draft(*a, **k):
+        bot.sessions.pop(7)  # /cancel ran meanwhile
+        return {"Front": "Hund", "Back": "perro"}
+
+    bot.send_preview = MagicMock()
+    # Act
+    with patch.object(ai, "draft_fields", fake_draft):
+        bot._spawn(bot.draft_and_preview, session, "Deutsch")
+        bot._drain()
+    # Assert
+    bot.send_preview.assert_not_called()
 
 
 if __name__ == "__main__":
