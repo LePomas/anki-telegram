@@ -371,11 +371,24 @@ def test_call_agy_cli_retries_when_output_is_blank():
     mock_sleep.assert_called_once()
 
 
+def test_call_agy_cli_retries_three_times_before_raising():
+    # Regression: agy gets 3 attempts, not 2 — a soft-denied tool call (the
+    # observed real-world failure) tends to clear on a fresh attempt, so the
+    # old 2-attempt budget gave up one retry too early.
+    cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
+    with patch(
+        "anki_telegram.ai.subprocess.run",
+        side_effect=[_fake_proc(1, "", "denied"), _fake_proc(1, "", "denied"), _fake_proc(0, "ok")],
+    ), patch("anki_telegram.ai.time.sleep"):
+        result = ai.call_ai(cfg, "sys", "usr")
+    assert result == "ok"
+
+
 def test_call_agy_cli_exhausts_retries_raises():
-    # Arrange: error condition — both attempts fail
+    # Arrange: error condition — all 3 attempts fail
     cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
     fail = _fake_proc(1, "", "boom")
-    with patch("anki_telegram.ai.subprocess.run", side_effect=[fail, fail]), patch(
+    with patch("anki_telegram.ai.subprocess.run", side_effect=[fail, fail, fail]), patch(
         "anki_telegram.ai.time.sleep"
     ):
         # Act / Assert
@@ -395,7 +408,7 @@ def test_call_agy_cli_error_keeps_head_so_heal_can_match():
         f"  Gemini 3.{n} Flash (Low)" for n in range(40)
     )
     with patch(
-        "anki_telegram.ai.subprocess.run", side_effect=[_fake_proc(1, "", stderr)] * 2
+        "anki_telegram.ai.subprocess.run", side_effect=[_fake_proc(1, "", stderr)] * 3
     ), patch("anki_telegram.ai.time.sleep"):
         try:
             ai.call_ai(cfg, "sys", "usr")
@@ -410,7 +423,7 @@ def test_call_agy_cli_no_output_reports_exit_code_not_blank_error():
     # _friendly_ai_error fall through to an undiagnosable "didn't respond".
     cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
     killed = _fake_proc(-9, "", "")
-    with patch("anki_telegram.ai.subprocess.run", side_effect=[killed, killed]), patch(
+    with patch("anki_telegram.ai.subprocess.run", side_effect=[killed, killed, killed]), patch(
         "anki_telegram.ai.time.sleep"
     ):
         try:

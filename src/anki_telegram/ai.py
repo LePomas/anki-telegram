@@ -98,14 +98,19 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
     # anything after it is swallowed as the prompt string, not a separate flag.
     cmd = [agy_bin, "--model", model, "-p", f"{system}\n\n{user}"]
     last_err = ""
-    for attempt in (1, 2):
+    # 3 attempts, not 2: agy is an agentic CLI that occasionally tries a
+    # RunCommand tool call for these plain text-drafting prompts; headless
+    # mode can't prompt for that permission and soft-denies it, which ends
+    # the turn with no output. A fresh attempt reliably avoids the retry —
+    # this isn't a flaky network call, so the usual 2 attempts undersell it.
+    for attempt in (1, 2, 3):
         try:
             proc = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=180, cwd=cwd
             )
         except subprocess.TimeoutExpired:
             last_err = "timed out after 180s"
-            if attempt == 1:
+            if attempt < 3:
                 log.warning("agy CLI timed out, retrying")
                 time.sleep(3)
             continue
@@ -114,7 +119,7 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
         # head, not tail: agy leads with the reason then dumps the model
         # list; a tail slice drops the line the heal path keys off.
         last_err = (proc.stderr or proc.stdout).strip()[:400] or f"exit {proc.returncode}, no output"
-        if attempt == 1:
+        if attempt < 3:
             log.warning("agy CLI exit %s, retrying: %s", proc.returncode, last_err)
             time.sleep(3)
     raise RuntimeError(f"agy CLI failed: {last_err}")
@@ -291,11 +296,20 @@ _GRAMMAR_NOTES = {
 }
 _DIALECT_HINTS = {"Spanish": "use Latin American Mexican Spanish — never peninsular Spanish"}
 
+# Leading line on every system prompt: agentic CLI providers (agy, claude)
+# otherwise sometimes reach for a tool/command call on these plain text
+# tasks, which headless mode can't approve and which silently kills the turn.
+_NO_TOOLS_NOTE = (
+    "You have no file, command, or tool access in this context — answer "
+    "directly from your own knowledge as plain text, never via a tool call."
+)
+
 
 def _analyze_system(source_name: str) -> str:
     clauses = [_ARTICLE_HINTS.get(source_name), "verbs as infinitive", "keep phrases as-is"]
     display_spec = "canonical dictionary form (" + ", ".join(c for c in clauses if c) + ")"
     return f"""\
+{_NO_TOOLS_NOTE}
 You are a {source_name} vocabulary assistant for an Anki flashcard workflow.
 The user submits a {source_name} word or short phrase, possibly inflected or misspelled.
 Reply with ONLY a JSON object:
@@ -325,6 +339,7 @@ def _draft_system(source_name: str, target_name: str) -> str:
     dialect_hint = _DIALECT_HINTS.get(target_name, "")
     dialect_clause = f" (if examples translate into {target_name}, {dialect_hint})" if dialect_hint else ""
     return f"""\
+{_NO_TOOLS_NOTE}
 You create Anki flashcards for a {source_name} learner. You are given the target deck's
 field names and a few existing notes from that deck as examples.
 Write a new note for the requested word that mirrors the examples EXACTLY:
@@ -386,6 +401,7 @@ def draft_fields(
 
 def _add_example_system(source_name: str) -> str:
     return f"""\
+{_NO_TOOLS_NOTE}
 You add an example sentence to an already-drafted Anki flashcard note for a
 {source_name} learner deck. You are given the deck's field names, a few existing
 notes to match formatting/language conventions, and the current draft.
