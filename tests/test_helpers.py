@@ -404,6 +404,35 @@ def test_call_agy_cli_error_keeps_head_so_heal_can_match():
             assert "invalid model selection" in str(exc)
 
 
+def test_call_agy_cli_no_output_reports_exit_code_not_blank_error():
+    # Regression: a subprocess killed with no stdout/stderr (e.g. OOM) must
+    # not raise "agy CLI failed: " with an empty reason — that's what made
+    # _friendly_ai_error fall through to an undiagnosable "didn't respond".
+    cfg = ai.AIConfig(provider="agy", model="m", agy_bin="agy")
+    killed = _fake_proc(-9, "", "")
+    with patch("anki_telegram.ai.subprocess.run", side_effect=[killed, killed]), patch(
+        "anki_telegram.ai.time.sleep"
+    ):
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "exit -9" in str(exc)
+
+
+def test_call_claude_cli_no_output_reports_exit_code_not_blank_error():
+    cfg = ai.AIConfig(provider="claude", model="m", claude_bin="claude")
+    killed = _fake_proc(-9, "", "")
+    with patch("anki_telegram.ai.subprocess.run", side_effect=[killed, killed]), patch(
+        "anki_telegram.ai.time.sleep"
+    ):
+        try:
+            ai.call_ai(cfg, "sys", "usr")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "exit -9" in str(exc)
+
+
 def test_parse_agy_models():
     out = (
         "Fetching available models...\n"

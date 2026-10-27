@@ -80,7 +80,11 @@ def _call_claude_cli(
             if data.get("is_error"):
                 raise RuntimeError(f"claude CLI error: {data.get('result', '')[:300]}")
             return data["result"]
-        last_err = _extract_error_message(proc.stdout) or (proc.stderr or proc.stdout)[-300:]
+        last_err = (
+            _extract_error_message(proc.stdout)
+            or (proc.stderr or proc.stdout)[-300:]
+            or f"exit {proc.returncode}, no output"
+        )
         if attempt == 1:
             log.warning("claude CLI exit %s, retrying: %s", proc.returncode, last_err)
             time.sleep(3)
@@ -109,7 +113,7 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
             return proc.stdout.strip()
         # head, not tail: agy leads with the reason then dumps the model
         # list; a tail slice drops the line the heal path keys off.
-        last_err = (proc.stderr or proc.stdout).strip()[:400]
+        last_err = (proc.stderr or proc.stdout).strip()[:400] or f"exit {proc.returncode}, no output"
         if attempt == 1:
             log.warning("agy CLI exit %s, retrying: %s", proc.returncode, last_err)
             time.sleep(3)
