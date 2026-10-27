@@ -845,11 +845,12 @@ def test_friendly_ai_error_detects_rate_limit_and_quota():
     assert "rate-limited" in _friendly_ai_error(RuntimeError("You exceeded your current quota"))
 
 
-def test_friendly_ai_error_generic_fallback():
-    # Arrange / Act
+def test_friendly_ai_error_generic_fallback_includes_actual_reason():
+    # Regression: the generic fallback used to discard the real exception
+    # detail behind a static "check the logs" message the user has no way
+    # to act on (no shell access, and this host's logs need sudo to read).
     result = _friendly_ai_error(RuntimeError("connection refused"))
-    # Assert
-    assert result == "AI backend didn't respond. Check the bot's logs for details."
+    assert result == "AI backend didn't respond: connection refused"
 
 
 def test_ai_config_from_env_gemini_fallback_defaults_and_overrides():

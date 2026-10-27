@@ -321,7 +321,7 @@ def _friendly_ai_error(exc: Exception) -> str:
     msg = str(exc)
     if "429" in msg or "quota" in msg.lower() or "rate limit" in msg.lower():
         return "AI backend is rate-limited or out of quota — try again later, or switch AI_PROVIDER."
-    return "AI backend didn't respond. Check the bot's logs for details."
+    return f"AI backend didn't respond: {msg[:200]}"
 
 
 # -- persisted state ----------------------------------------------------------
