@@ -449,8 +449,16 @@ class Bot:
             session.busy = True
         self._lock.release()
         try:
+            t0 = time.monotonic()
             with self._ai_slots:
-                return fn(*args, **kwargs)
+                t1 = time.monotonic()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    log.info(
+                        "timing ai.%s: queued %.2fs, ran %.2fs",
+                        getattr(fn, "__name__", "call"), t1 - t0, time.monotonic() - t1,
+                    )
         finally:
             self._lock.acquire()
             if session is not None:

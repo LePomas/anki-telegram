@@ -6,6 +6,7 @@ import html
 import logging
 import re
 import tempfile
+import functools
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,18 @@ from anki.collection import Collection
 from anki.sync_pb2 import SyncAuth, SyncCollectionResponse
 
 log = logging.getLogger(__name__)
+
+
+def timed(fn):
+    """Log each call's duration at INFO (even if it raises)."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        t0 = time.monotonic()
+        try:
+            return fn(*a, **kw)
+        finally:
+            log.info("timing %s: %.2fs", fn.__name__, time.monotonic() - t0)
+    return wrapper
 
 _TAG_RE = re.compile(r"<[^>]+>")
 _SOUND_RE = re.compile(r"\[sound:[^\]]+\]")
@@ -146,6 +159,7 @@ class AnkiStore:
             self._auth = self.col.sync_login(self.username, self.password, None)
         return self._auth
 
+    @timed
     def sync(self, allow_full_download: bool) -> None:
         """Sync with AnkiWeb. allow_full_download=False after local writes,
         so a schema conflict never silently discards a just-created card."""
@@ -222,6 +236,7 @@ class AnkiStore:
 
     # -- search -------------------------------------------------------------
 
+    @timed
     def search(self, terms: list[str], read_deck: str | None = None) -> list[Match]:
         matches: dict[int, Match] = {}
         deck_filter = f" deck:{escape_search(read_deck)}" if read_deck else ""
@@ -256,6 +271,7 @@ class AnkiStore:
 
     # -- write --------------------------------------------------------------
 
+    @timed
     def add_note(self, deck: str, notetype: str, fields: dict[str, str]) -> int:
         nt = self.col.models.by_name(notetype)
         if nt is None:
@@ -270,6 +286,7 @@ class AnkiStore:
         self.col.add_note(note, did)
         return note.id
 
+    @timed
     def add_audio(self, text: str, lang: str) -> str:
         """Generate TTS in `lang` (a gTTS language code, e.g. "de"), store in
         media, return [sound:...] tag."""
