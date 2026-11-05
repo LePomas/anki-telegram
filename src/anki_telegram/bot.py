@@ -531,6 +531,13 @@ class Bot:
         keyboard = session.anchor_keyboard if target == session.anchor_message_id else []
         self.tg.edit(self.cfg.chat_id, target, text, keyboard)
 
+    def _finish(self, session: Session, message_id: int, line: str) -> None:
+        """Final edit of a word's message: keep the card text and append the
+        outcome (buttons go), instead of collapsing to one line — the message
+        used to shrink and pull everything below it up."""
+        base = session.anchor_text if message_id == session.anchor_message_id else ""
+        self.tg.edit(self.cfg.chat_id, message_id, f"{base}\n\n{line}" if base else line)
+
     def effective_read_deck(self) -> str:
         return self.state.data.get("read_deck", self.cfg.read_deck)
 
@@ -764,11 +771,11 @@ class Bot:
             self._collapse_menus(session)
         elif action == "skip":
             self.sessions.pop(sid, None)
-            self.tg.edit(self.cfg.chat_id, message_id, "👍 Skipped — card already exists.")
+            self._finish(session, message_id, "👍 Skipped — card already exists.")
             self._collapse_menus(session)
         elif action == "cancel":
             self.sessions.pop(sid, None)
-            self.tg.edit(self.cfg.chat_id, message_id, "Cancelled.")
+            self._finish(session, message_id, "Cancelled.")
             self._collapse_menus(session)
         elif action == "create":
             deck = self.state.data.get("deck")
@@ -1190,11 +1197,7 @@ class Bot:
                 return
         word = fields.get(main, "") if main else ""
         self.sessions.pop(session.sid, None)
-        self.tg.edit(
-            self.cfg.chat_id,
-            message_id,
-            f"✅ Saved <b>{esc(word)}</b> to <b>{esc(fmt.deck)}</b> and synced.",
-        )
+        self._finish(session, message_id, f"✅ Saved <b>{esc(word)}</b> to <b>{esc(fmt.deck)}</b> and synced.")
         self._collapse_menus(session)
 
     def help_text(self) -> str:

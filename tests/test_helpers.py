@@ -735,6 +735,13 @@ def test_update_menu_edits_anchor_in_place_on_later_calls():
     assert session.menu_message_ids == [5]  # not duplicated
 
 
+def test_finish_keeps_card_text_above_outcome():
+    session = Session(sid=1, anchor_message_id=5, anchor_text="card body")
+    fake_self = SimpleNamespace(tg=MagicMock(), cfg=SimpleNamespace(chat_id=42))
+    Bot._finish(fake_self, session, 5, "done")
+    fake_self.tg.edit.assert_called_once_with(42, 5, "card body\n\ndone")
+
+
 def test_update_menu_rebinds_anchor_when_edit_falls_back_to_a_new_message():
     # Arrange: Telegram.edit already resolved the API-level fallback and
     # returned the id of the message that now actually holds the text —
