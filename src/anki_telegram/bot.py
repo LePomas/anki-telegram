@@ -277,6 +277,9 @@ def keep_typing(tg: "Telegram", chat_id: int, interval: float = 4.0):
         t.join(timeout=1)
 
 
+_STATUS_SLOT = "\n\n\u2800"  # braille blank: one line Telegram won't trim
+
+
 def btn(text: str, data: str) -> dict:
     return {"text": text, "callback_data": data}
 
@@ -374,6 +377,7 @@ class Session:
     menu_message_ids: list[int] = field(default_factory=list)  # every message sent with buttons
     anchor_message_id: int | None = None  # the one message this word's flow edits in place
     anchor_text: str = ""  # last real (non-status) text the anchor was set to
+    anchor_keyboard: list = field(default_factory=list)  # buttons currently on the anchor
     busy: bool = False  # an AI call for this word is in flight; taps are ignored
 
 
@@ -396,7 +400,14 @@ class Bot:
             if _validate_provider(candidate) is None:
                 self.cfg.ai = candidate
         saved_model = self.state.data.get("ai_model")
-        if saved_model and saved_model in _MODELS_BY_PROVIDER.get(self.cfg.ai.provider, ()):
+        # agy's model names are renamed upstream (3.7 -> 3.8) and the hardcoded list
+        # lags behind, so trust the saved pick; _ai_heal_retry fixes a truly stale one
+        # at the same effort. Validating against the list silently reset "Low" to the
+        # default "Medium" on every restart.
+        if saved_model and (
+            self.cfg.ai.provider == "agy"
+            or saved_model in _MODELS_BY_PROVIDER.get(self.cfg.ai.provider, ())
+        ):
             self.cfg.ai = replace(self.cfg.ai, model=saved_model)
         saved_lang_source = self.state.data.get("lang_source")
         if saved_lang_source and saved_lang_source in available_langs():
@@ -489,6 +500,10 @@ class Bot:
         keeps a busy chat with several words in flight from filling up with
         stale button messages. Sends fresh only the first time."""
         session.anchor_text = text
+        session.anchor_keyboard = keyboard or []
+        # trailing blank slot that _show_status fills, so a status line doesn't
+        # change the message height (buttons stay put under the finger)
+        text += _STATUS_SLOT
         if session.anchor_message_id is not None:
             new_id = self.tg.edit(self.cfg.chat_id, session.anchor_message_id, text, keyboard)
             if new_id != session.anchor_message_id:
@@ -510,7 +525,11 @@ class Bot:
         result landed. Doesn't touch `anchor_text`, so the next real
         `_update_menu` call still overwrites this, not appends to it."""
         text = f"{session.anchor_text}\n\n{status}" if session.anchor_text else status
-        self.tg.edit(self.cfg.chat_id, message_id or session.anchor_message_id, text, [])
+        target = message_id or session.anchor_message_id
+        # keep the buttons (taps meanwhile get the "Still working…" toast or find
+        # the session gone) so the message doesn't shrink and grow back
+        keyboard = session.anchor_keyboard if target == session.anchor_message_id else []
+        self.tg.edit(self.cfg.chat_id, target, text, keyboard)
 
     def effective_read_deck(self) -> str:
         return self.state.data.get("read_deck", self.cfg.read_deck)
@@ -864,6 +883,11 @@ class Bot:
         )
 
     def prompt_model(self, session: Session) -> None:
+        if self.cfg.ai.provider == "agy":
+            try:  # live list, so the picker never offers renamed models
+                _MODELS_BY_PROVIDER["agy"] = ai.agy_models(self.cfg.ai.agy_bin, self.cfg.data_dir) or _MODELS_BY_PROVIDER["agy"]
+            except Exception:
+                log.warning("agy models refresh failed; using built-in list", exc_info=True)
         models = _MODELS_BY_PROVIDER.get(self.cfg.ai.provider)
         if not models:
             self.tg.send(

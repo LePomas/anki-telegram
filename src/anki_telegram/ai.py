@@ -119,6 +119,8 @@ def _call_agy_cli(model: str, system: str, user: str, agy_bin: str, cwd: Path | 
         # head, not tail: agy leads with the reason then dumps the model
         # list; a tail slice drops the line the heal path keys off.
         last_err = (proc.stderr or proc.stdout).strip()[:400] or f"exit {proc.returncode}, no output"
+        if "invalid model selection" in last_err:
+            break  # permanent: retrying can't help, let the caller heal the model name
         if attempt < 3:
             log.warning("agy CLI exit %s, retrying: %s", proc.returncode, last_err)
             time.sleep(3)

@@ -28,6 +28,7 @@ from anki_telegram.bot import (
     Config,
     Session,
     Telegram,
+    _STATUS_SLOT,
     _ai_config_from_env,
     _friendly_ai_error,
     available_langs,
@@ -711,7 +712,7 @@ def test_update_menu_sends_first_message_and_sets_anchor():
     # Act
     Bot._update_menu(fake_self, session, "hi", kb)
     # Assert
-    fake_tg.send.assert_called_once_with(42, "hi", kb)
+    fake_tg.send.assert_called_once_with(42, "hi" + _STATUS_SLOT, kb)
     fake_tg.edit.assert_not_called()
     assert session.anchor_message_id == 5
     assert session.menu_message_ids == [5]
@@ -728,7 +729,7 @@ def test_update_menu_edits_anchor_in_place_on_later_calls():
     # Act
     Bot._update_menu(fake_self, session, "next step", kb)
     # Assert
-    fake_tg.edit.assert_called_once_with(42, 5, "next step", kb)
+    fake_tg.edit.assert_called_once_with(42, 5, "next step" + _STATUS_SLOT, kb)
     fake_tg.send.assert_not_called()
     assert session.anchor_message_id == 5
     assert session.menu_message_ids == [5]  # not duplicated
