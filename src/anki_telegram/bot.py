@@ -26,7 +26,7 @@ log = logging.getLogger("anki_telegram")
 POLL_TIMEOUT = 50
 # ponytail: fixed cap sized for the 1 GB Radxa host (one local CLI process per
 # call); make it an env var if a bigger host or HTTP-only provider needs more.
-AI_CONCURRENCY = 3
+AI_CONCURRENCY = 5
 
 
 # -- config -------------------------------------------------------------------
